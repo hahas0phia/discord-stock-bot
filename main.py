@@ -3501,25 +3501,25 @@ async def slash_help(interaction: discord.Interaction):
 
 # ─── Final Execution ──────────────────────────────────────────────────────────
 
-# This initializes the database before the app starts
+# 1. Initialize Database
 init_db()
 
+# 2. Start Bot in the background as soon as the web server loads
 @_flask_app.before_request
 def start_bot_once():
-    """Starts the Discord bot in the background when the first web request hits"""
     if not hasattr(bot, 'started'):
         bot.started = True
-        print("Starting Discord Bot...")
+        print("🚀 Starting Discord Bot background task...")
         token = os.environ.get("DISCORD_TOKEN")
-        if not token:
-            print("Error: DISCORD_TOKEN not found.")
-            return
-        
-        # Create the background task for the bot
-        loop = asyncio.get_event_loop()
-        loop.create_task(bot.start(token))
+        if token:
+            # Get the existing event loop from the main thread
+            loop = asyncio.get_event_loop()
+            loop.create_task(bot.start(token))
+        else:
+            print("❌ ERROR: DISCORD_TOKEN not found in Environment Variables")
 
+# 3. Handle Running (Local vs Render)
 if __name__ == "__main__":
-    # This part only runs if you run 'python main.py' locally
-    port = int(os.environ.get("PORT", 8765))
+    # This runs if you do 'python main.py' locally
+    port = int(os.environ.get("PORT", 10000))
     _flask_app.run(host="0.0.0.0", port=port)
