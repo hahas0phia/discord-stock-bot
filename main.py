@@ -3501,25 +3501,33 @@ async def slash_help(interaction: discord.Interaction):
 
 # ─── Final Execution ──────────────────────────────────────────────────────────
 
-# 1. Initialize Database
 init_db()
 
-# 2. Start Bot in the background as soon as the web server loads
+def run_bot():
+    """Create a new event loop and run the bot."""
+    # This fixes the 'RuntimeError: No current event loop'
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    token = os.environ.get("DISCORD_TOKEN")
+    if token:
+        print("🚀 Starting Discord Bot...")
+        # Use the loop to run the bot until it's finished
+        loop.run_until_complete(bot.start(token))
+    else:
+        print("❌ ERROR: DISCORD_TOKEN not found.")
+
 @_flask_app.before_request
 def start_bot_once():
+    """Starts the bot in a background thread on the first request."""
     if not hasattr(bot, 'started'):
         bot.started = True
-        print("🚀 Starting Discord Bot background task...")
-        token = os.environ.get("DISCORD_TOKEN")
-        if token:
-            # Get the existing event loop from the main thread
-            loop = asyncio.get_event_loop()
-            loop.create_task(bot.start(token))
-        else:
-            print("❌ ERROR: DISCORD_TOKEN not found in Environment Variables")
+        # Create a thread so Flask and the Bot run at the same time
+        thread = threading.Thread(target=run_bot, daemon=True)
+        thread.start()
+        print("✅ Bot background thread initiated.")
 
-# 3. Handle Running (Local vs Render)
 if __name__ == "__main__":
-    # This runs if you do 'python main.py' locally
+    # Local testing
     port = int(os.environ.get("PORT", 10000))
     _flask_app.run(host="0.0.0.0", port=port)
