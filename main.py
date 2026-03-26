@@ -120,7 +120,7 @@ init_db()
 # ─── Bot Setup ────────────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = True  # <--- Add this line
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ─── Bot Start Time (for /ping uptime) ────────────────────────────────────────
@@ -1634,12 +1634,15 @@ async def slash_removealert(interaction: discord.Interaction, id: int):
 
 @bot.event
 async def on_ready():
-    print(f"✅ {bot.user} is online!")
+    # This helps us confirm the bot reached Discord
+    print(f"✅ SUCCESS: {bot.user} is connected and online!") 
     try:
         synced = await bot.tree.sync()
-        print(f"   Synced {len(synced)} slash command(s) globally.")
+        print(f"Synced {len(synced)} slash command(s) globally.")
     except Exception as e:
-        print(f"   Sync error: {e}")
+        print(f"Sync error: {e}")
+    
+    # These stay the same
     bot.loop.create_task(_check_alerts())
     bot.loop.create_task(_monitor_trades())
 
@@ -3501,39 +3504,20 @@ async def slash_help(interaction: discord.Interaction):
 
 # ─── Final Execution ──────────────────────────────────────────────────────────
 
-def run_discord_bot():
-    """Create a private event loop for the bot and run it."""
-    # This creates a new 'brain' for the bot to avoid the RuntimeError
-    new_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(new_loop)
-    
-    token = os.environ.get("DISCORD_TOKEN")
-    if not token:
-        print("❌ CRITICAL: DISCORD_TOKEN is missing!")
-        return
-
-    print("🚀 Starting Discord Bot engine...")
-    try:
-        # This keeps the bot running forever in this thread
-        new_loop.run_until_complete(bot.start(token))
-    except Exception as e:
-        print(f"❌ Bot Engine Error: {e}")
-
-# Initialize Database
+# 1. Initialize the database
 init_db()
 
-# Start the bot in its own thread IMMEDIATELY
-# This lets the web server and the bot live at the same time
+# 2. Start the Discord bot in a background thread
+# This ensures it runs regardless of whether you're on Render or Local
 print("⚙️  Initializing Background Thread...")
 bot_thread = threading.Thread(target=run_discord_bot, daemon=True)
 bot_thread.start()
 
-if __name__ == "__main__":
-    # Local fallback
-    port = int(os.environ.get("PORT", 10000))
-    _flask_app.run(host="0.0.0.0", port=port)
+# 3. Define 'app' for Gunicorn (Render needs this!)
+app = _flask_app
 
+# 4. Local execution (only runs if you play the file manually)
 if __name__ == "__main__":
-    # Local testing
     port = int(os.environ.get("PORT", 10000))
+    print(f"📡 Running local server on port {port}")
     _flask_app.run(host="0.0.0.0", port=port)
