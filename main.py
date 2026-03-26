@@ -23,9 +23,9 @@ def _home():
     return "EMA Bot 24/7 ✅"
 
 def _run_flask():
-    _flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8765)), use_reloader=False)
-
-threading.Thread(target=_run_flask, daemon=True).start()
+    # This tells the bot to listen on the port Render provides
+    port = int(os.environ.get("PORT", 10000))
+    _flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 # ─── Alerts Database ──────────────────────────────────────────────────────────
 
