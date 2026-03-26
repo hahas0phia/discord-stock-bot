@@ -3501,31 +3501,37 @@ async def slash_help(interaction: discord.Interaction):
 
 # ─── Final Execution ──────────────────────────────────────────────────────────
 
-init_db()
-
-def run_bot():
-    """Create a new event loop and run the bot."""
-    # This fixes the 'RuntimeError: No current event loop'
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+def run_discord_bot():
+    """Create a private event loop for the bot and run it."""
+    # This creates a new 'brain' for the bot to avoid the RuntimeError
+    new_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(new_loop)
     
     token = os.environ.get("DISCORD_TOKEN")
-    if token:
-        print("🚀 Starting Discord Bot...")
-        # Use the loop to run the bot until it's finished
-        loop.run_until_complete(bot.start(token))
-    else:
-        print("❌ ERROR: DISCORD_TOKEN not found.")
+    if not token:
+        print("❌ CRITICAL: DISCORD_TOKEN is missing!")
+        return
 
-@_flask_app.before_request
-def start_bot_once():
-    """Starts the bot in a background thread on the first request."""
-    if not hasattr(bot, 'started'):
-        bot.started = True
-        # Create a thread so Flask and the Bot run at the same time
-        thread = threading.Thread(target=run_bot, daemon=True)
-        thread.start()
-        print("✅ Bot background thread initiated.")
+    print("🚀 Starting Discord Bot engine...")
+    try:
+        # This keeps the bot running forever in this thread
+        new_loop.run_until_complete(bot.start(token))
+    except Exception as e:
+        print(f"❌ Bot Engine Error: {e}")
+
+# Initialize Database
+init_db()
+
+# Start the bot in its own thread IMMEDIATELY
+# This lets the web server and the bot live at the same time
+print("⚙️  Initializing Background Thread...")
+bot_thread = threading.Thread(target=run_discord_bot, daemon=True)
+bot_thread.start()
+
+if __name__ == "__main__":
+    # Local fallback
+    port = int(os.environ.get("PORT", 10000))
+    _flask_app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     # Local testing
