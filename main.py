@@ -23,9 +23,9 @@ def _home():
     return "EMA Bot 24/7 ✅"
 
 def _run_flask():
-    # This tells the bot to listen on the port Render provides
-    port = int(os.environ.get("PORT", 10000))
-    _flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
+    _flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8765)), use_reloader=False)
+
+threading.Thread(target=_run_flask, daemon=True).start()
 
 # ─── Alerts Database ──────────────────────────────────────────────────────────
 
@@ -120,7 +120,7 @@ init_db()
 # ─── Bot Setup ────────────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
-intents.message_content = True  # <--- Add this line
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ─── Bot Start Time (for /ping uptime) ────────────────────────────────────────
@@ -1634,15 +1634,12 @@ async def slash_removealert(interaction: discord.Interaction, id: int):
 
 @bot.event
 async def on_ready():
-    # This helps us confirm the bot reached Discord
-    print(f"✅ SUCCESS: {bot.user} is connected and online!") 
+    print(f"✅ {bot.user} is online!")
     try:
         synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash command(s) globally.")
+        print(f"   Synced {len(synced)} slash command(s) globally.")
     except Exception as e:
-        print(f"Sync error: {e}")
-    
-    # These stay the same
+        print(f"   Sync error: {e}")
     bot.loop.create_task(_check_alerts())
     bot.loop.create_task(_monitor_trades())
 
@@ -3502,22 +3499,10 @@ async def slash_help(interaction: discord.Interaction):
     embed.set_footer(text="Tiers: 🟢 Leading = above EMA9/21/50 • 🟡 Mediocre = above EMA21/50 • 🔴 Lagging = below")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ─── Final Execution ──────────────────────────────────────────────────────────
+# ─── Run ──────────────────────────────────────────────────────────────────────
 
-# 1. Initialize the database
-init_db()
+token = os.environ.get("DISCORD_TOKEN")
+if not token:
+    raise RuntimeError("DISCORD_TOKEN environment variable is not set.")
 
-# 2. Start the Discord bot in a background thread
-# This ensures it runs regardless of whether you're on Render or Local
-print("⚙️  Initializing Background Thread...")
-bot_thread = threading.Thread(target=run_discord_bot, daemon=True)
-bot_thread.start()
-
-# 3. Define 'app' for Gunicorn (Render needs this!)
-app = _flask_app
-
-# 4. Local execution (only runs if you play the file manually)
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    print(f"📡 Running local server on port {port}")
-    _flask_app.run(host="0.0.0.0", port=port)
+bot.run(token)
