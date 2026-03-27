@@ -1,18 +1,23 @@
+import os
+import sqlite3
+import threading
 import discord
-from discord import app_commands
-from discord.ext import commands
-import yfinance as yf
 import pandas as pd
 import numpy as np
+import yfinance as yf
+from dotenv import load_dotenv
+from discord import app_commands
+from discord.ext import commands
 import asyncio
 import io
-import os
-import threading
-import sqlite3
 import json
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask
+from sqlalchemy import create_engine, pool
+from sqlalchemy.orm import sessionmaker
+import psycopg2
+from contextlib import contextmanager
 
 # ─── Flask Keep-Alive (24/7) ──────────────────────────────────────────────────
 
@@ -22,84 +27,233 @@ _flask_app = Flask(__name__)
 def _home():
     return "EMA Bot 24/7 ✅"
 
+@_flask_app.route("/health")
+def _health():
+    """Health check endpoint for Oracle Cloud load balancer."""
+    try:
+        # Quick database connection test
+        with _db_session() as session:
+            session.execute("SELECT 1")
+        return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}, 200
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}, 503
+
 def _run_flask():
-    _flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8765)), use_reloader=False)
+    port = int(os.environ.get("PORT", 8080))
+    _flask_app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
 
 threading.Thread(target=_run_flask, daemon=True).start()
 
-# ─── Alerts Database ──────────────────────────────────────────────────────────
+# ─── Database Configuration (PostgreSQL via SQLAlchemy) ──────────────────────
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alerts.db")
+# Try to use DATABASE_URL first (Oracle Cloud), fallback to SQLite for local dev
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "sqlite:////tmp/alerts.db"  # Local fallback for development
+)
 
-def _db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Create engine with connection pooling
+if "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL:
+    # Production: PostgreSQL on Oracle Cloud
+    engine = create_engine(
+        DATABASE_URL,
+        poolclass=pool.QueuePool,
+        pool_size=5,
+        max_overflow=10,
+        pool_recycle=3600,
+        pool_pre_ping=True,
+        echo=False,
+    )
+else:
+    # Development: Local SQLite (no pooling)
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=pool.StaticPool,
+    )
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+@contextmanager
+def _db_session():
+    """Context manager for database sessions (replaces _db() for thread safety)."""
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+# For backward compatibility, keep a raw connection context manager
+@contextmanager
+def _db():
+    """Raw database connection context manager."""
+    if "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL:
+        # PostgreSQL connection
+        conn = psycopg2.connect(DATABASE_URL)
+    else:
+        # SQLite connection
+        conn = sqlite3.connect(DATABASE_URL.replace("sqlite:////", ""))
+        conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 def init_db():
+    """Initialize database with schema - works for both PostgreSQL and SQLite."""
     with _db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS alerts (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER NOT NULL,
-                alert_type TEXT    NOT NULL,
-                params     TEXT    NOT NULL,
-                created_at TEXT    NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id      INTEGER NOT NULL,
-                ticker       TEXT    NOT NULL,
-                shares       INTEGER NOT NULL,
-                entry        REAL    NOT NULL,
-                stop         REAL    NOT NULL,
-                target       REAL    NOT NULL,
-                risk_dollars REAL    NOT NULL,
-                status       TEXT    NOT NULL DEFAULT 'ACTIVE',
-                created_at   TEXT    NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS portfolio (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id     INTEGER NOT NULL,
-                ticker      TEXT    NOT NULL,
-                shares      REAL    NOT NULL,
-                entry_price REAL    NOT NULL,
-                added_at    TEXT    NOT NULL,
-                UNIQUE(user_id, ticker)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS command_log (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id   INTEGER NOT NULL,
-                username  TEXT    NOT NULL,
-                command   TEXT    NOT NULL,
-                args_json TEXT    NOT NULL DEFAULT '{}',
-                timestamp TEXT    NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_watchlists (
-                id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id  INTEGER NOT NULL,
-                ticker   TEXT    NOT NULL,
-                added_at TEXT    NOT NULL,
-                UNIQUE(user_id, ticker)
-            )
-        """)
+        cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+        
+        # Detect database type
+        is_postgres = "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL
+        
+        # Create tables with SQL that works for both databases
         try:
-            conn.execute("ALTER TABLE trades ADD COLUMN exit_price REAL")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE trades ADD COLUMN closed_at TEXT")
-        except Exception:
-            pass
+            if is_postgres:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS alerts (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        alert_type TEXT NOT NULL,
+                        params TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS trades (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        ticker TEXT NOT NULL,
+                        shares REAL NOT NULL,
+                        entry REAL NOT NULL,
+                        stop REAL NOT NULL,
+                        target REAL NOT NULL,
+                        risk_dollars REAL NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'ACTIVE',
+                        created_at TEXT NOT NULL,
+                        exit_price REAL,
+                        closed_at TEXT
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS portfolio (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        ticker TEXT NOT NULL,
+                        shares REAL NOT NULL,
+                        entry_price REAL NOT NULL,
+                        added_at TEXT NOT NULL,
+                        UNIQUE(user_id, ticker)
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS command_log (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        username TEXT NOT NULL,
+                        command TEXT NOT NULL,
+                        args_json TEXT NOT NULL DEFAULT '{}',
+                        timestamp TEXT NOT NULL
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_watchlists (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        ticker TEXT NOT NULL,
+                        added_at TEXT NOT NULL,
+                        last_tier TEXT DEFAULT NULL,
+                        UNIQUE(user_id, ticker)
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS ibkr_config (
+                        user_id BIGINT PRIMARY KEY,
+                        flex_token TEXT NOT NULL,
+                        query_id TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
+            else:
+                # SQLite version
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS alerts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        alert_type TEXT NOT NULL,
+                        params TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS trades (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        ticker TEXT NOT NULL,
+                        shares INTEGER NOT NULL,
+                        entry REAL NOT NULL,
+                        stop REAL NOT NULL,
+                        target REAL NOT NULL,
+                        risk_dollars REAL NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'ACTIVE',
+                        created_at TEXT NOT NULL,
+                        exit_price REAL,
+                        closed_at TEXT
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS portfolio (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        ticker TEXT NOT NULL,
+                        shares REAL NOT NULL,
+                        entry_price REAL NOT NULL,
+                        added_at TEXT NOT NULL,
+                        UNIQUE(user_id, ticker)
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS command_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        username TEXT NOT NULL,
+                        command TEXT NOT NULL,
+                        args_json TEXT NOT NULL DEFAULT '{}',
+                        timestamp TEXT NOT NULL
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_watchlists (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        ticker TEXT NOT NULL,
+                        added_at TEXT NOT NULL,
+                        last_tier TEXT DEFAULT NULL,
+                        UNIQUE(user_id, ticker)
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS ibkr_config (
+                        user_id INTEGER PRIMARY KEY,
+                        flex_token TEXT NOT NULL,
+                        query_id TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
+        except Exception as e:
+            print(f"[DB] Table creation (may already exist): {e}")
+        
         conn.commit()
+
+print(f"[DB] Using database: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'SQLite (local dev)'}")
 
 def _update_trade_status(trade_id: int, status: str):
     with _db() as conn:
@@ -572,22 +726,12 @@ def df_to_file(df: pd.DataFrame, filename: str) -> discord.File:
 
 def build_tv_watchlist_file(tickers: list[str], price_map: dict | None = None) -> discord.File:
     """
-    Build a TradingView watchlist-import CSV (Symbol, Price, Exchange).
-    If price_map is provided, uses those prices; otherwise fetches the latest close.
+    Build a TradingView watchlist import file: plain comma-separated tickers, no spaces.
+    Format: TICKER1,TICKER2,TICKER3,...
     """
-    rows = []
-    for ticker in tickers:
-        price = (price_map or {}).get(ticker, 0)
-        if not price:
-            try:
-                raw = yf.download(ticker, period="1d", auto_adjust=True, progress=False)
-                price = float(raw["Close"].iloc[-1]) if not raw.empty else 0
-            except Exception:
-                price = 0
-        rows.append({"Symbol": ticker, "Price": f"{price:.2f}", "Exchange": "NASDAQ"})
-    df_wl = pd.DataFrame(rows)
-    buf = io.BytesIO(df_wl.to_csv(index=False).encode())
-    return discord.File(buf, "tradingview_watchlist.csv")
+    content = ",".join(tickers)
+    buf = io.BytesIO(content.encode())
+    return discord.File(buf, "tradingview_watchlist.txt")
 
 # ─── UI Components ────────────────────────────────────────────────────────────
 
@@ -607,23 +751,12 @@ class DownloadCSV(discord.ui.View):
 
     @discord.ui.button(label="📈 TradingView Watchlist", style=discord.ButtonStyle.green, row=0)
     async def tv_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
         wl_file = build_tv_watchlist_file(self.tickers)
-        tickers_str = ", ".join(self.tickers)
-        embed = discord.Embed(
-            title="📊 TradingView Watchlist",
-            description=(
-                f"**{len(self.tickers)} stocks** — `{tickers_str}`\n\n"
-                "**How to import:**\n"
-                "1. TradingView → Watchlist\n"
-                "2. Click `...` → Import\n"
-                "3. Upload `tradingview_watchlist.csv`\n"
-                "4. All stocks added instantly!"
-            ),
-            color=0x1A6EBD,
-            timestamp=datetime.utcnow(),
+        await interaction.response.send_message(
+            f"📈 **TradingView Watchlist** — {len(self.tickers)} tickers\n"
+            "**How to import:** TradingView → Watchlist → `...` → Import → upload `tradingview_watchlist.txt`",
+            file=wl_file, ephemeral=True,
         )
-        await interaction.followup.send(embed=embed, file=wl_file, ephemeral=True)
 
 
 class TierDownloadView(discord.ui.View):
@@ -666,26 +799,13 @@ class TierDownloadView(discord.ui.View):
 
     @discord.ui.button(label="📈 TradingView Watchlist", style=discord.ButtonStyle.green, row=1)
     async def tv_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        leading = self.df[self.df["Watchlist"] == "Leading"]["Ticker"].tolist()[:5]
-        tickers = leading if leading else self.df["Ticker"].tolist()[:5]
-        price_map = self.df.set_index("Ticker")["Close"].to_dict()
-        wl_file = build_tv_watchlist_file(tickers, price_map=price_map)
-        tickers_str = ", ".join(tickers)
-        embed = discord.Embed(
-            title="📊 TradingView Watchlist",
-            description=(
-                f"**{len(tickers)} stocks** — `{tickers_str}`\n\n"
-                "**How to import:**\n"
-                "1. TradingView → Watchlist\n"
-                "2. Click `...` → Import\n"
-                "3. Upload `tradingview_watchlist.csv`\n"
-                "4. All stocks added instantly!"
-            ),
-            color=0x1A6EBD,
-            timestamp=datetime.utcnow(),
+        tickers = self.df["Ticker"].tolist()
+        wl_file = build_tv_watchlist_file(tickers)
+        await interaction.response.send_message(
+            f"📈 **TradingView Watchlist** — {len(tickers)} tickers\n"
+            "**How to import:** TradingView → Watchlist → `...` → Import → upload `tradingview_watchlist.txt`",
+            file=wl_file, ephemeral=True,
         )
-        await interaction.followup.send(embed=embed, file=wl_file, ephemeral=True)
 
 
 class TVWatchlistView(discord.ui.View):
@@ -697,25 +817,13 @@ class TVWatchlistView(discord.ui.View):
 
     @discord.ui.button(label="📈 TradingView Watchlist", style=discord.ButtonStyle.green)
     async def tv_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        tickers   = self.df["Ticker"].tolist()[:5]
-        price_map = self.df.set_index("Ticker")["Close"].to_dict()
-        wl_file   = build_tv_watchlist_file(tickers, price_map=price_map)
-        tickers_str = ", ".join(tickers)
-        embed = discord.Embed(
-            title="📊 TradingView Watchlist",
-            description=(
-                f"**{len(tickers)} stocks** — `{tickers_str}`\n\n"
-                "**How to import:**\n"
-                "1. TradingView → Watchlist\n"
-                "2. Click `...` → Import\n"
-                "3. Upload `tradingview_watchlist.csv`\n"
-                "4. All stocks added instantly!"
-            ),
-            color=0x1A6EBD,
-            timestamp=datetime.utcnow(),
+        tickers = self.df["Ticker"].tolist()
+        wl_file = build_tv_watchlist_file(tickers)
+        await interaction.response.send_message(
+            f"📈 **TradingView Watchlist** — {len(tickers)} tickers\n"
+            "**How to import:** TradingView → Watchlist → `...` → Import → upload `tradingview_watchlist.txt`",
+            file=wl_file, ephemeral=True,
         )
-        await interaction.followup.send(embed=embed, file=wl_file, ephemeral=True)
 
 
 class ScanTierView(discord.ui.View):
@@ -737,25 +845,13 @@ class ScanTierView(discord.ui.View):
 
     @discord.ui.button(label="📈 TradingView Watchlist", style=discord.ButtonStyle.blurple, row=0)
     async def tv_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        tickers   = self.df["Ticker"].tolist()[:5]
-        price_map = self.df.set_index("Ticker")["Close"].to_dict() if "Close" in self.df.columns else None
-        wl_file   = build_tv_watchlist_file(tickers, price_map=price_map)
-        tickers_str = ", ".join(tickers)
-        embed = discord.Embed(
-            title="📊 TradingView Watchlist",
-            description=(
-                f"**{len(tickers)} stocks** — `{tickers_str}`\n\n"
-                "**How to import:**\n"
-                "1. TradingView → Watchlist\n"
-                "2. Click `...` → Import\n"
-                "3. Upload `tradingview_watchlist.csv`\n"
-                "4. All stocks added instantly!"
-            ),
-            color=0x1A6EBD,
-            timestamp=datetime.utcnow(),
+        tickers = self.df["Ticker"].tolist()
+        wl_file = build_tv_watchlist_file(tickers)
+        await interaction.response.send_message(
+            f"📈 **TradingView Watchlist** — {len(tickers)} tickers\n"
+            "**How to import:** TradingView → Watchlist → `...` → Import → upload `tradingview_watchlist.txt`",
+            file=wl_file, ephemeral=True,
         )
-        await interaction.followup.send(embed=embed, file=wl_file, ephemeral=True)
 
 
 class ScanView(discord.ui.View):
@@ -813,28 +909,13 @@ class ScanView(discord.ui.View):
 
     @discord.ui.button(label="📈 TradingView Watchlist", style=discord.ButtonStyle.green)
     async def tv_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        leading = self.df[self.df["Watchlist"] == "Leading"]["Ticker"].tolist()[:5]
-        if not leading:
-            await interaction.followup.send("No Leading stocks found.", ephemeral=True)
-            return
-        price_map = self.df.set_index("Ticker")["Close"].to_dict()
-        wl_file = build_tv_watchlist_file(leading, price_map=price_map)
-        tickers_str = ", ".join(leading)
-        embed = discord.Embed(
-            title="📊 TradingView Watchlist",
-            description=(
-                f"**{len(leading)} stocks** — `{tickers_str}`\n\n"
-                "**How to import:**\n"
-                "1. TradingView → Watchlist\n"
-                "2. Click `...` → Import\n"
-                "3. Upload `tradingview_watchlist.csv`\n"
-                "4. All stocks added instantly!"
-            ),
-            color=0x1A6EBD,
-            timestamp=datetime.utcnow(),
+        tickers = self.df["Ticker"].tolist()
+        wl_file = build_tv_watchlist_file(tickers)
+        await interaction.response.send_message(
+            f"📈 **TradingView Watchlist** — {len(tickers)} tickers\n"
+            "**How to import:** TradingView → Watchlist → `...` → Import → upload `tradingview_watchlist.txt`",
+            file=wl_file, ephemeral=True,
         )
-        await interaction.followup.send(embed=embed, file=wl_file, ephemeral=True)
 
 
 class PaginatedView(discord.ui.View):
@@ -869,25 +950,13 @@ class PaginatedView(discord.ui.View):
 
     @discord.ui.button(label="📈 TradingView Watchlist", style=discord.ButtonStyle.green)
     async def tv_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        tickers   = self.df["Ticker"].tolist()[:5]
-        price_map = self.df.set_index("Ticker")["Close"].to_dict() if "Close" in self.df.columns else None
-        wl_file   = build_tv_watchlist_file(tickers, price_map=price_map)
-        tickers_str = ", ".join(tickers)
-        embed = discord.Embed(
-            title="📊 TradingView Watchlist",
-            description=(
-                f"**{len(tickers)} stocks** — `{tickers_str}`\n\n"
-                "**How to import:**\n"
-                "1. TradingView → Watchlist\n"
-                "2. Click `...` → Import\n"
-                "3. Upload `tradingview_watchlist.csv`\n"
-                "4. All stocks added instantly!"
-            ),
-            color=0x1A6EBD,
-            timestamp=datetime.utcnow(),
+        tickers = self.df["Ticker"].tolist() if self.df is not None else []
+        wl_file = build_tv_watchlist_file(tickers)
+        await interaction.response.send_message(
+            f"📈 **TradingView Watchlist** — {len(tickers)} tickers\n"
+            "**How to import:** TradingView → Watchlist → `...` → Import → upload `tradingview_watchlist.txt`",
+            file=wl_file, ephemeral=True,
         )
-        await interaction.followup.send(embed=embed, file=wl_file, ephemeral=True)
 
 # ─── /recommend UI classes ────────────────────────────────────────────────────
 
@@ -1553,6 +1622,50 @@ async def alert_target(interaction: discord.Interaction, ticker: str, price: flo
     )
     await interaction.followup.send(embed=embed, ephemeral=True)
 
+@alert_group.command(name="mute", description="Cancel all your active price alerts")
+async def alert_mute(interaction: discord.Interaction):
+    uid = interaction.user.id
+    with _db() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM alerts WHERE user_id = ?", (uid,)
+        ).fetchone()[0]
+
+    if count == 0:
+        await interaction.response.send_message(
+            "✅ You have no active alerts to cancel.", ephemeral=True
+        )
+        return
+
+    class _ConfirmMute(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=60)
+
+        @discord.ui.button(label="🔇 Yes, cancel all alerts", style=discord.ButtonStyle.danger)
+        async def confirm(self, i: discord.Interaction, b: discord.ui.Button):
+            with _db() as conn:
+                deleted = conn.execute(
+                    "DELETE FROM alerts WHERE user_id = ?", (uid,)
+                ).rowcount
+                conn.commit()
+            for child in self.children:
+                child.disabled = True
+            await i.response.edit_message(
+                content=f"🔇 Done — **{deleted}** alert(s) cancelled. You won't receive any more DMs from them.",
+                view=self,
+            )
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+        async def cancel(self, i: discord.Interaction, b: discord.ui.Button):
+            for child in self.children:
+                child.disabled = True
+            await i.response.edit_message(content="↩️ Cancelled — your alerts are still active.", view=self)
+
+    await interaction.response.send_message(
+        f"⚠️ This will cancel all **{count}** of your active price alert(s). Are you sure?",
+        view=_ConfirmMute(),
+        ephemeral=True,
+    )
+
 bot.tree.add_command(alert_group)
 
 # ─── /alerts ──────────────────────────────────────────────────────────────────
@@ -1630,18 +1743,256 @@ async def slash_removealert(interaction: discord.Interaction, id: int):
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ─── on_ready ─────────────────────────────────────────────────────────────────
+# ─── Watchlist auto-alert monitor ─────────────────────────────────────────────
+
+_wl_monitor_started = False
+
+async def _monitor_watchlists():
+    """Background loop: scan every user's personal watchlist every 30 min during
+    trading hours. DM users when any of their tickers flip to Leading tier."""
+    global _wl_monitor_started
+    if _wl_monitor_started:
+        return
+    _wl_monitor_started = True
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(1800)          # 30-minute cadence
+        if not _is_trading_window():
+            continue
+        try:
+            # Fetch all watchlist rows grouped by user
+            with _db() as conn:
+                rows = list(conn.execute(
+                    "SELECT id, user_id, ticker, last_tier FROM user_watchlists"
+                ).fetchall())
+            if not rows:
+                continue
+
+            # Build a set of unique tickers for one bulk download
+            all_tickers = list({r["ticker"] for r in rows})
+            download_arg = all_tickers[0] if len(all_tickers) == 1 else all_tickers
+            raw = await asyncio.to_thread(
+                yf.download, download_arg,
+                period="3mo", auto_adjust=True, progress=False,
+            )
+
+            # Compute EMA tier for each ticker
+            tier_map: dict[str, str] = {}
+            for ticker in all_tickers:
+                try:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        col = raw.xs(ticker, level=1, axis=1)
+                    else:
+                        col = raw
+                    close = col["Close"].dropna()
+                    if len(close) < 50:
+                        continue
+                    e21 = close.ewm(span=21).mean()
+                    e50 = close.ewm(span=50).mean()
+                    e200 = close.ewm(span=200).mean() if len(close) >= 200 else None
+                    price = float(close.iloc[-1])
+                    e21_v, e50_v = float(e21.iloc[-1]), float(e50.iloc[-1])
+                    e200_v = float(e200.iloc[-1]) if e200 is not None else None
+
+                    if price > e21_v > e50_v and (e200_v is None or price > e200_v):
+                        tier = "Leading"
+                    elif price > e21_v or price > e50_v:
+                        tier = "Mediocre"
+                    else:
+                        tier = "Lagging"
+                    tier_map[ticker] = tier
+                except Exception:
+                    pass
+
+            # Group rows by user_id to send one DM per user
+            from collections import defaultdict
+            user_rows: dict[int, list] = defaultdict(list)
+            for r in rows:
+                user_rows[r["user_id"]].append(r)
+
+            for user_id, user_watchlist in user_rows.items():
+                newly_leading: list[tuple[str, str]] = []  # (ticker, prev_tier)
+                db_updates: list[tuple[str, int]] = []     # (new_tier, row_id)
+
+                for r in user_watchlist:
+                    new_tier = tier_map.get(r["ticker"])
+                    if new_tier is None:
+                        continue
+                    prev_tier = r["last_tier"]
+                    db_updates.append((new_tier, r["id"]))
+                    if new_tier == "Leading" and prev_tier != "Leading":
+                        newly_leading.append((r["ticker"], prev_tier or "unknown"))
+
+                # Persist updated tiers
+                with _db() as conn:
+                    conn.executemany(
+                        "UPDATE user_watchlists SET last_tier = ? WHERE id = ?",
+                        db_updates,
+                    )
+                    conn.commit()
+
+                if not newly_leading:
+                    continue
+
+                lines = "\n".join(
+                    f"• **{t}** (was: {prev})" for t, prev in newly_leading
+                )
+                embed = discord.Embed(
+                    title="📈 Watchlist Buy Signal!",
+                    description=(
+                        f"The following ticker(s) from your watchlist just moved into "
+                        f"**Leading** tier (price > EMA21 > EMA50):\n\n{lines}\n\n"
+                        "Use `/watchlist scan` to see full details."
+                    ),
+                    color=0x00C853,
+                    timestamp=datetime.utcnow(),
+                )
+                embed.set_footer(text="Cookie Monster • Watchlist Alert")
+                await _send_dm(user_id, embed)
+
+        except Exception as e:
+            print(f"[WL Monitor] Error: {e}")
+
+# ─── Morning watchlist brief ───────────────────────────────────────────────────
+
+_morning_brief_started = False
+_morning_brief_last_date: str = ""   # "YYYY-MM-DD" — only one brief per calendar day
+
+async def _morning_watchlist_brief():
+    """Background loop: at 9:30 AM ET on weekdays, DM every user a summary of
+    which of their watchlist tickers are currently in Leading tier."""
+    global _morning_brief_started, _morning_brief_last_date
+    if _morning_brief_started:
+        return
+    _morning_brief_started = True
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(60)          # wake every minute to check the clock
+        now = _et_now()
+        # Only fire on weekdays between 9:30–9:40 AM ET, once per calendar day
+        if now.weekday() >= 5:
+            continue
+        if not (now.hour == 9 and 30 <= now.minute < 40):
+            continue
+        today_str = now.strftime("%Y-%m-%d")
+        if _morning_brief_last_date == today_str:
+            continue                     # already sent today
+        _morning_brief_last_date = today_str
+        print(f"[Morning Brief] Sending watchlist morning briefs for {today_str}...")
+
+        try:
+            with _db() as conn:
+                rows = list(conn.execute(
+                    "SELECT id, user_id, ticker FROM user_watchlists"
+                ).fetchall())
+            if not rows:
+                continue
+
+            all_tickers = list({r["ticker"] for r in rows})
+            download_arg = all_tickers[0] if len(all_tickers) == 1 else all_tickers
+            raw = await asyncio.to_thread(
+                yf.download, download_arg,
+                period="3mo", auto_adjust=True, progress=False,
+            )
+
+            tier_map: dict[str, str] = {}
+            price_map: dict[str, float] = {}
+            for ticker in all_tickers:
+                try:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        col = raw.xs(ticker, level=1, axis=1)
+                    else:
+                        col = raw
+                    close = col["Close"].dropna()
+                    if len(close) < 50:
+                        continue
+                    e21 = close.ewm(span=21).mean()
+                    e50 = close.ewm(span=50).mean()
+                    e200 = close.ewm(span=200).mean() if len(close) >= 200 else None
+                    price = float(close.iloc[-1])
+                    e21_v, e50_v = float(e21.iloc[-1]), float(e50.iloc[-1])
+                    e200_v = float(e200.iloc[-1]) if e200 is not None else None
+
+                    if price > e21_v > e50_v and (e200_v is None or price > e200_v):
+                        tier = "Leading"
+                    elif price > e21_v or price > e50_v:
+                        tier = "Mediocre"
+                    else:
+                        tier = "Lagging"
+                    tier_map[ticker] = tier
+                    price_map[ticker] = price
+                except Exception:
+                    pass
+
+            # Group by user
+            from collections import defaultdict
+            user_rows: dict[int, list] = defaultdict(list)
+            for r in rows:
+                user_rows[r["user_id"]].append(r)
+
+            for user_id, user_watchlist in user_rows.items():
+                leading = [r["ticker"] for r in user_watchlist if tier_map.get(r["ticker"]) == "Leading"]
+                mediocre = [r["ticker"] for r in user_watchlist if tier_map.get(r["ticker"]) == "Mediocre"]
+                lagging = [r["ticker"] for r in user_watchlist if tier_map.get(r["ticker"]) == "Lagging"]
+
+                def fmt(tlist: list[str]) -> str:
+                    return "  ".join(
+                        f"`{t}` ${price_map[t]:.2f}" for t in tlist if t in price_map
+                    ) or "—"
+
+                embed = discord.Embed(
+                    title=f"☀️ Morning Watchlist Brief — {today_str}",
+                    description=(
+                        "Here's where your watchlist stands at the open:\n\u200b"
+                    ),
+                    color=0xFFD600,
+                    timestamp=datetime.utcnow(),
+                )
+                if leading:
+                    embed.add_field(
+                        name=f"🟢 Leading ({len(leading)})",
+                        value=fmt(leading),
+                        inline=False,
+                    )
+                if mediocre:
+                    embed.add_field(
+                        name=f"🟡 Mediocre ({len(mediocre)})",
+                        value=fmt(mediocre),
+                        inline=False,
+                    )
+                if lagging:
+                    embed.add_field(
+                        name=f"🔴 Lagging ({len(lagging)})",
+                        value=fmt(lagging),
+                        inline=False,
+                    )
+                embed.set_footer(text="Cookie Monster • use /watchlist scan for full EMA details")
+                await _send_dm(user_id, embed)
+
+            print(f"[Morning Brief] Sent to {len(user_rows)} user(s).")
+
+        except Exception as e:
+            print(f"[Morning Brief] Error: {e}")
 
 @bot.event
 async def on_ready():
-    print(f"✅ {bot.user} is online!")
+    """Bot startup: sync commands and start background monitors."""
+    print(f"✅ Bot logged in as {bot.user}")
+    
+    # Sync slash commands globally
     try:
         synced = await bot.tree.sync()
         print(f"   Synced {len(synced)} slash command(s) globally.")
     except Exception as e:
         print(f"   Sync error: {e}")
+    
+    # Start all 4 background monitor loops
     bot.loop.create_task(_check_alerts())
     bot.loop.create_task(_monitor_trades())
+    bot.loop.create_task(_monitor_watchlists())
+    bot.loop.create_task(_morning_watchlist_brief())
+    
+    print("   ✅ All background monitors started")
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -1966,7 +2317,7 @@ async def slash_sectors(interaction: discord.Interaction):
         )
     embed.set_footer(text="Average 1-month performance by sector")
 
-    top_tickers = df[df["Watchlist"] == "Leading"]["Ticker"].tolist()[:5]
+    top_tickers = df[df["Watchlist"] == "Leading"]["Ticker"].tolist()
     view = DownloadCSV(sector_stats.to_csv(index=False).encode(), "sectors.csv", tickers=top_tickers)
     await interaction.followup.send(embed=embed, view=view)
 
@@ -2062,7 +2413,7 @@ async def slash_premarketreport(interaction: discord.Interaction):
     embed.add_field(name="📊 SPY",         value=f"{spy_status}  (`{spy_1d:+.2f}%` 1D)",      inline=False)
     embed.set_footer(text="Data via yfinance")
 
-    top_tickers = df[df["Watchlist"] == "Leading"]["Ticker"].tolist()[:5]
+    top_tickers = df[df["Watchlist"] == "Leading"]["Ticker"].tolist()
     view = DownloadCSV(df.head(20).to_csv(index=False).encode(), "report_sample.csv", tickers=top_tickers)
     await interaction.followup.send(embed=embed, view=view)
 
@@ -2367,7 +2718,7 @@ async def slash_csv(interaction: discord.Interaction, file: discord.Attachment):
         embed.add_field(name="Lagging",  value=str(counts.get("Lagging",  0)),    inline=True)
         embed.set_footer(text="Tier = EMA9/21/50 positioning (requires Close, EMA9, EMA21, EMA50 columns)")
         ticker_col = next((c for c in ["Ticker", "Symbol"] if c in df.columns), None)
-        tickers = df[ticker_col].dropna().tolist()[:5] if ticker_col else []
+        tickers = df[ticker_col].dropna().tolist() if ticker_col else []
         view = DownloadCSV(out_bytes, "processed_tiers.csv", tickers=tickers) if tickers else None
         await interaction.followup.send(embed=embed, file=out_file, view=view)
     except Exception as exc:
@@ -2450,25 +2801,13 @@ async def slash_hotsectors(
 
         @discord.ui.button(label="📈 TradingView Watchlist", style=discord.ButtonStyle.green)
         async def tv_btn(self, i: discord.Interaction, b: discord.ui.Button):
-            await i.response.defer(ephemeral=True)
-            tickers   = hot_df["Ticker"].tolist()[:5]
-            price_map = hot_df.set_index("Ticker")["Close"].to_dict()
-            wl_file   = build_tv_watchlist_file(tickers, price_map=price_map)
-            tickers_str = ", ".join(tickers)
-            embed_tv = discord.Embed(
-                title="📊 TradingView Watchlist",
-                description=(
-                    f"**{len(tickers)} stocks** — `{tickers_str}`\n\n"
-                    "**How to import:**\n"
-                    "1. TradingView → Watchlist\n"
-                    "2. Click `...` → Import\n"
-                    "3. Upload `tradingview_watchlist.csv`\n"
-                    "4. All stocks added instantly!"
-                ),
-                color=0x1A6EBD,
-                timestamp=datetime.utcnow(),
+            tickers = hot_df["Ticker"].tolist()
+            wl_file = build_tv_watchlist_file(tickers)
+            await i.response.send_message(
+                f"📈 **TradingView Watchlist** — {len(tickers)} tickers\n"
+                "**How to import:** TradingView → Watchlist → `...` → Import → upload `tradingview_watchlist.txt`",
+                file=wl_file, ephemeral=True,
             )
-            await i.followup.send(embed=embed_tv, file=wl_file, ephemeral=True)
 
     full_file = discord.File(io.BytesIO(hot_df.to_csv(index=False).encode()), f"hot_sectors_top{top}.csv")
     await interaction.followup.send(embed=embed, view=HotTierView(), file=full_file)
@@ -3109,19 +3448,20 @@ async def slash_history(interaction: discord.Interaction):
 
 # ─── /commandlog ──────────────────────────────────────────────────────────────
 
-@bot.tree.command(name="commandlog", description="Recent command activity across all users")
+@bot.tree.command(name="commandlog", description="Your recent command history")
 @app_commands.describe(limit="Number of entries to show (max 100, default 20)")
 async def slash_commandlog(interaction: discord.Interaction, limit: int = 20):
     limit = max(1, min(limit, 100))
+    uid = interaction.user.id
     with _db() as conn:
         rows = conn.execute(
-            "SELECT username, command, args_json, timestamp FROM command_log ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "SELECT command, args_json, timestamp FROM command_log WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (uid, limit),
         ).fetchall()
 
     if not rows:
         await interaction.response.send_message(
-            "No commands have been logged yet.", ephemeral=True
+            "You haven't run any commands yet.", ephemeral=True
         )
         return
 
@@ -3130,20 +3470,19 @@ async def slash_commandlog(interaction: discord.Interaction, limit: int = 20):
         ts   = r["timestamp"][:16].replace("T", " ")
         args = json.loads(r["args_json"])
         args_str = " ".join(f"{k}:{v}" for k, v in args.items()) if args else ""
-        user_short = r["username"].split("#")[0][:15]
-        lines.append(f"`{ts}` **{user_short}** `/{r['command']}` {args_str}".strip())
+        lines.append(f"`{ts}` `/{r['command']}` {args_str}".strip())
 
     pages: list[discord.Embed] = []
     per_page = 15
     for i in range(0, max(1, len(lines)), per_page):
         chunk = lines[i:i + per_page]
         embed = discord.Embed(
-            title=f"📜 Command Log (last {len(rows)})",
+            title=f"📜 Your Command History (last {len(rows)})",
             description="\n".join(chunk),
             color=0x5865F2,
             timestamp=datetime.utcnow(),
         )
-        embed.set_footer(text=f"Page {i//per_page + 1}/{(len(lines)-1)//per_page + 1} · All slash command activity · UTC timestamps")
+        embed.set_footer(text=f"Page {i//per_page + 1}/{(len(lines)-1)//per_page + 1} · Your slash command activity · UTC timestamps")
         pages.append(embed)
 
     view = HistoryView(pages) if len(pages) > 1 else None
@@ -3347,16 +3686,450 @@ async def mywl_scan(interaction: discord.Interaction):
             self._tickers   = _tickers
             self._price_map = _price_map
 
-        @discord.ui.button(label="📊 TradingView Watchlist CSV", style=discord.ButtonStyle.primary)
+        @discord.ui.button(label="📈 TradingView Watchlist", style=discord.ButtonStyle.primary)
         async def tv_btn(self, _interaction: discord.Interaction, _button: discord.ui.Button):
-            wl_file = build_tv_watchlist_file(self._tickers, price_map=self._price_map)
+            wl_file = build_tv_watchlist_file(self._tickers)
             await _interaction.response.send_message(
-                "Your TradingView watchlist CSV:", file=wl_file, ephemeral=True
+                f"📈 **TradingView Watchlist** — {len(self._tickers)} tickers\n"
+                "**How to import:** TradingView → Watchlist → `...` → Import → upload `tradingview_watchlist.txt`",
+                file=wl_file, ephemeral=True,
             )
 
     await interaction.followup.send(embed=embed, view=_WlScanView(tickers, price_map), ephemeral=True)
 
+
+@mywl_group.command(name="import", description="Upload a .txt watchlist (TICKER,TICKER,...) and run EMA tier scan")
+@app_commands.describe(file="A .txt file with comma-separated tickers, e.g. AAPL,NVDA,TSLA")
+async def mywl_import(interaction: discord.Interaction, file: discord.Attachment):
+    if not file.filename.lower().endswith(".txt"):
+        await interaction.response.send_message(
+            "❌ Please upload a `.txt` file with comma-separated tickers (e.g. `AAPL,NVDA,TSLA`).",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        raw_bytes = await file.read()
+        content   = raw_bytes.decode("utf-8", errors="ignore")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Could not read file: {e}", ephemeral=True)
+        return
+
+    # Parse: split on commas and/or newlines, strip whitespace, uppercase
+    tickers = [t.strip().upper() for t in content.replace("\n", ",").split(",") if t.strip()]
+    tickers = list(dict.fromkeys(tickers))  # deduplicate, preserve order
+
+    if not tickers:
+        await interaction.followup.send(
+            "❌ No valid tickers found in the file. Make sure tickers are comma-separated.",
+            ephemeral=True,
+        )
+        return
+
+    if len(tickers) > 200:
+        await interaction.followup.send(
+            f"❌ Too many tickers ({len(tickers)}). Max 200 per import.", ephemeral=True
+        )
+        return
+
+    df = await asyncio.to_thread(fetch_data, tickers)
+    if df.empty:
+        await interaction.followup.send(
+            "⚠️ Could not fetch data for any of the tickers. Check the symbols are valid.",
+            ephemeral=True,
+        )
+        return
+
+    leading  = df[df["Watchlist"] == "Leading"]
+    mediocre = df[df["Watchlist"] == "Mediocre"]
+    lagging  = df[df["Watchlist"] == "Lagging"]
+    date_str = datetime.utcnow().strftime("%b %d, %Y")
+
+    def fmt_rows(subset: pd.DataFrame) -> str:
+        lines = []
+        for _, r in subset.iterrows():
+            lines.append(
+                f"**{r['Ticker']}**  ${r['Close']:.2f}  "
+                f"1D: `{r['Perf1D']:+.1f}%`  1M: `{r['Perf1M']:+.1f}%`"
+            )
+        return "\n".join(lines) if lines else "_None_"
+
+    embed = discord.Embed(
+        title=f"📥 Imported Watchlist Scan — {date_str}",
+        description=f"**{len(df)}/{len(tickers)}** tickers scanned from `{file.filename}`",
+        color=0x00C853,
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name=f"🟢 Leading ({len(leading)})",   value=fmt_rows(leading)[:1024],  inline=False)
+    embed.add_field(name=f"🟡 Mediocre ({len(mediocre)})", value=fmt_rows(mediocre)[:1024], inline=False)
+    embed.add_field(name=f"🔴 Lagging ({len(lagging)})",   value=fmt_rows(lagging)[:1024],  inline=False)
+    embed.set_footer(text="EMA 9/21/50 tier analysis · Use buttons to export")
+
+    full_csv = discord.File(
+        io.BytesIO(df.to_csv(index=False).encode()),
+        f"imported-scan-{datetime.utcnow().strftime('%m-%d-%y')}.csv",
+    )
+    await interaction.followup.send(
+        embed=embed,
+        file=full_csv,
+        view=TierDownloadView(df, "imported"),
+        ephemeral=True,
+    )
+
+
+@mywl_group.command(name="clear", description="Remove every ticker from your personal watchlist")
+async def mywl_clear(interaction: discord.Interaction):
+    uid = interaction.user.id
+    with _db() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM user_watchlists WHERE user_id = ?", (uid,)
+        ).fetchone()[0]
+
+    if count == 0:
+        await interaction.response.send_message(
+            "📭 Your watchlist is already empty.", ephemeral=True
+        )
+        return
+
+    class _ConfirmClear(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=60)
+
+        @discord.ui.button(label="🗑️ Yes, clear everything", style=discord.ButtonStyle.danger)
+        async def confirm(self, i: discord.Interaction, b: discord.ui.Button):
+            with _db() as conn:
+                deleted = conn.execute(
+                    "DELETE FROM user_watchlists WHERE user_id = ?", (uid,)
+                ).rowcount
+                conn.commit()
+            for child in self.children:
+                child.disabled = True
+            await i.response.edit_message(
+                content=f"🗑️ Done — removed **{deleted}** ticker(s) from your watchlist.",
+                view=self,
+            )
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+        async def cancel(self, i: discord.Interaction, b: discord.ui.Button):
+            for child in self.children:
+                child.disabled = True
+            await i.response.edit_message(content="↩️ Cancelled — watchlist unchanged.", view=self)
+
+    await interaction.response.send_message(
+        f"⚠️ This will remove all **{count}** ticker(s) from your watchlist. Are you sure?",
+        view=_ConfirmClear(),
+        ephemeral=True,
+    )
+
 bot.tree.add_command(mywl_group)
+
+# ─── IBKR Flex integration ────────────────────────────────────────────────────
+
+def _fetch_ibkr_positions_sync(flex_token: str, query_id: str) -> list[dict]:
+    """Call IBKR Flex Web Service and return a list of open long equity positions."""
+    import requests, time, xml.etree.ElementTree as ET
+
+    req_url = (
+        "https://gdcdyn.interactivebrokers.com/Universal/servlet/"
+        "FlexStatementService.SendRequest"
+    )
+    resp = requests.get(req_url, params={"t": flex_token, "q": query_id, "v": "3"}, timeout=30)
+    resp.raise_for_status()
+
+    root = ET.fromstring(resp.text)
+    status = root.findtext("Status")
+    if status != "Success":
+        err = root.findtext("ErrorMessage") or resp.text[:200]
+        raise ValueError(f"IBKR request failed: {err}")
+
+    ref_code = root.findtext("ReferenceCode")
+    url_base  = root.findtext("Url")
+    if not ref_code or not url_base:
+        raise ValueError("IBKR response missing ReferenceCode or Url")
+
+    # Poll until report is ready (usually 5-20 s)
+    for _ in range(12):
+        time.sleep(3)
+        dl = requests.get(f"{url_base}?t={flex_token}&q={ref_code}&v=3", timeout=30)
+        dl.raise_for_status()
+        root2 = ET.fromstring(dl.text)
+        status2 = root2.findtext("Status")
+        if status2 == "Success":
+            break
+        if status2 not in ("Processing", None):
+            raise ValueError(f"IBKR retrieval failed: {root2.findtext('ErrorMessage') or dl.text[:200]}")
+    else:
+        raise ValueError("IBKR Flex query timed out — wait a moment and try `/ibkr sync` again")
+
+    positions: list[dict] = []
+    for pos in root2.iter("OpenPosition"):
+        sym = (pos.get("symbol") or "").strip().upper()
+        qty = float(pos.get("position") or 0)
+        entry = float(pos.get("costBasisPrice") or pos.get("avgCost") or 0)
+        mark  = float(pos.get("markPrice") or 0)
+        cat   = pos.get("assetCategory", "STK")
+        if sym and qty > 0 and cat == "STK" and entry > 0:
+            positions.append({"ticker": sym, "shares": qty, "entry": entry, "current": mark})
+    return positions
+
+
+def _compute_atr_bulk(tickers: list[str]) -> dict[str, float]:
+    """Return ATR(14) for each ticker using a single yfinance bulk download."""
+    download_arg = tickers[0] if len(tickers) == 1 else tickers
+    raw = yf.download(download_arg, period="3mo", auto_adjust=True, progress=False)
+    atr_map: dict[str, float] = {}
+    for t in tickers:
+        try:
+            if isinstance(raw.columns, pd.MultiIndex):
+                col = raw.xs(t, level=1, axis=1)
+            else:
+                col = raw
+            h, l, c = col["High"], col["Low"], col["Close"]
+            tr = pd.concat(
+                [h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1
+            ).max(axis=1)
+            atr_map[t] = float(tr.tail(14).mean())
+        except Exception:
+            pass
+    return atr_map
+
+
+ibkr_group = app_commands.Group(name="ibkr", description="Connect IBKR portfolio — auto sell-alert setup")
+
+
+@ibkr_group.command(name="setup", description="Save your IBKR Flex token and Query ID (only you can see this)")
+@app_commands.describe(
+    flex_token="Your IBKR Flex Web Service token (from Account Management → Reports → Flex Queries)",
+    query_id="The Flex Query ID configured to export Open Positions",
+)
+async def ibkr_setup(interaction: discord.Interaction, flex_token: str, query_id: str):
+    uid = interaction.user.id
+    with _db() as conn:
+        conn.execute(
+            """INSERT INTO ibkr_config (user_id, flex_token, query_id, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   flex_token = excluded.flex_token,
+                   query_id   = excluded.query_id,
+                   updated_at = excluded.updated_at""",
+            (uid, flex_token.strip(), query_id.strip(), datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+    embed = discord.Embed(
+        title="✅ IBKR Flex Credentials Saved",
+        description=(
+            "Your Flex token and Query ID are stored.\n\n"
+            "**Next steps:**\n"
+            "• Make sure your Flex Query includes **Open Positions** with "
+            "`Mark Price` and `Cost Basis Price` fields\n"
+            "• Run `/ibkr sync` to fetch your holdings and set sell alerts"
+        ),
+        color=0x00C853,
+        timestamp=datetime.utcnow(),
+    )
+    embed.set_footer(text="This message is only visible to you")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@ibkr_group.command(name="sync", description="Fetch your IBKR holdings and set 1R-risk / 3R-target sell alerts")
+async def ibkr_sync(interaction: discord.Interaction):
+    uid = interaction.user.id
+    with _db() as conn:
+        cfg = conn.execute(
+            "SELECT flex_token, query_id FROM ibkr_config WHERE user_id = ?", (uid,)
+        ).fetchone()
+    if not cfg:
+        await interaction.response.send_message(
+            "❌ No IBKR credentials saved. Run `/ibkr setup` first.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        positions = await asyncio.to_thread(
+            _fetch_ibkr_positions_sync, cfg["flex_token"], cfg["query_id"]
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ IBKR fetch failed: {e}", ephemeral=True)
+        return
+
+    if not positions:
+        await interaction.followup.send(
+            "⚠️ No open equity positions found. Make sure your Flex Query includes Open Positions (STK).",
+            ephemeral=True,
+        )
+        return
+
+    tickers = [p["ticker"] for p in positions]
+    atr_map = await asyncio.to_thread(_compute_atr_bulk, tickers)
+
+    rows: list[dict] = []
+    for p in positions:
+        t = p["ticker"]
+        entry = p["entry"]
+        atr   = atr_map.get(t)
+        if atr and atr > 0:
+            stop   = round(entry - 2 * atr, 2)
+            target = round(entry + 3 * (entry - stop), 2)
+        else:
+            stop   = round(entry * 0.93, 2)   # fallback: 7% hard stop
+            target = round(entry + 3 * (entry - stop), 2)
+        rows.append({**p, "stop": stop, "target": target,
+                     "r": round(entry - stop, 2)})
+
+    # ── Auto-sync to portfolio table ──────────────────────────────────────────
+    now_str = datetime.utcnow().isoformat()
+    with _db() as conn:
+        for r in rows:
+            conn.execute(
+                """INSERT INTO portfolio (user_id, ticker, shares, entry_price, added_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, ticker) DO UPDATE SET
+                       shares      = excluded.shares,
+                       entry_price = excluded.entry_price,
+                       added_at    = excluded.added_at""",
+                (uid, r["ticker"], r["shares"], r["entry"], now_str),
+            )
+        conn.commit()
+    portfolio_added = len(rows)
+
+    embed = discord.Embed(
+        title=f"📊 IBKR Sync — {len(rows)} Position(s)",
+        description=(
+            "Stops = **entry − 2×ATR(14)**, Targets = **entry + 6×ATR (3R)**\n"
+            f"*(ATR unavailable → 7% hard stop)*\n"
+            f"✅ **{portfolio_added}** position(s) synced to your portfolio\n\u200b"
+        ),
+        color=0x1A6EBD,
+        timestamp=datetime.utcnow(),
+    )
+    for r in rows:
+        pnl_pct = ((r["current"] - r["entry"]) / r["entry"] * 100) if r["entry"] else 0
+        embed.add_field(
+            name=f"**{r['ticker']}** — {r['shares']:.0f} shares",
+            value=(
+                f"Entry: `${r['entry']:.2f}`  Current: `${r['current']:.2f}` "
+                f"(`{pnl_pct:+.1f}%`)\n"
+                f"🛑 Stop: `${r['stop']:.2f}`  🎯 3R Target: `${r['target']:.2f}`"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text="Use the button below to activate DM alerts for all positions")
+
+    class _IbkrAlertView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=120)
+            self._rows = rows
+
+        @discord.ui.button(label="🔔 Set Sell Alerts for All", style=discord.ButtonStyle.green)
+        async def set_alerts(self, i: discord.Interaction, b: discord.ui.Button):
+            now_str = datetime.utcnow().isoformat()
+            inserts = []
+            for r in self._rows:
+                target_params = json.dumps({"ticker": r["ticker"], "target": r["target"], "direction": "above"})
+                stop_params = json.dumps({"ticker": r["ticker"], "target": r["stop"], "direction": "below"})
+                inserts.append((uid, "price_target", target_params, now_str))
+                inserts.append((uid, "price_target", stop_params, now_str))
+            with _db() as conn:
+                conn.executemany(
+                    """INSERT INTO alerts
+                       (user_id, alert_type, params, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    inserts,
+                )
+                conn.commit()
+            for child in self.children:
+                child.disabled = True
+            await i.response.edit_message(
+                content=(
+                    f"✅ Set **{len(self._rows)*2}** alerts "
+                    f"({len(self._rows)} stop + {len(self._rows)} target).\n"
+                    "You'll be DM'd when any position hits its 3R target or stop."
+                ),
+                view=self,
+            )
+
+    await interaction.followup.send(embed=embed, view=_IbkrAlertView(), ephemeral=True)
+
+
+@ibkr_group.command(name="positions", description="View your IBKR open positions with live EMA tier")
+async def ibkr_positions(interaction: discord.Interaction):
+    uid = interaction.user.id
+    with _db() as conn:
+        cfg = conn.execute(
+            "SELECT flex_token, query_id FROM ibkr_config WHERE user_id = ?", (uid,)
+        ).fetchone()
+    if not cfg:
+        await interaction.response.send_message(
+            "❌ No IBKR credentials saved. Run `/ibkr setup` first.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        positions = await asyncio.to_thread(
+            _fetch_ibkr_positions_sync, cfg["flex_token"], cfg["query_id"]
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ IBKR fetch failed: {e}", ephemeral=True)
+        return
+
+    if not positions:
+        await interaction.followup.send("⚠️ No open equity positions found.", ephemeral=True)
+        return
+
+    tickers = [p["ticker"] for p in positions]
+    download_arg = tickers[0] if len(tickers) == 1 else tickers
+    raw = await asyncio.to_thread(
+        yf.download, download_arg, period="3mo", auto_adjust=True, progress=False
+    )
+
+    tier_icon = {"Leading": "🟢", "Mediocre": "🟡", "Lagging": "🔴"}
+    embed = discord.Embed(
+        title=f"📋 IBKR Positions — {len(positions)} Holding(s)",
+        color=0x7289DA,
+        timestamp=datetime.utcnow(),
+    )
+    for p in positions:
+        t = p["ticker"]
+        try:
+            col = raw.xs(t, level=1, axis=1) if isinstance(raw.columns, pd.MultiIndex) else raw
+            close = col["Close"].dropna()
+            e21 = float(close.ewm(span=21).mean().iloc[-1])
+            e50 = float(close.ewm(span=50).mean().iloc[-1])
+            price = float(close.iloc[-1])
+            if price > e21 > e50:
+                tier = "Leading"
+            elif price > e21 or price > e50:
+                tier = "Mediocre"
+            else:
+                tier = "Lagging"
+        except Exception:
+            tier = "Unknown"
+            price = p["current"]
+
+        pnl_pct = ((price - p["entry"]) / p["entry"] * 100) if p["entry"] else 0
+        embed.add_field(
+            name=f"{tier_icon.get(tier, '⚪')} **{t}** ({tier})",
+            value=(
+                f"{p['shares']:.0f} shares · Entry `${p['entry']:.2f}` · "
+                f"Now `${price:.2f}` (`{pnl_pct:+.1f}%`)"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text="Run /ibkr sync to set 3R sell alerts • Cookie Monster")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+bot.tree.add_command(ibkr_group)
+
+# ─── /stop ────────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="stop", description="Acknowledge / dismiss the previous command")
+async def slash_stop(interaction: discord.Interaction):
+    await interaction.response.send_message("✅ Stopped.", ephemeral=True)
 
 # ─── /ping ────────────────────────────────────────────────────────────────────
 
@@ -3419,8 +4192,10 @@ async def slash_help(interaction: discord.Interaction):
             "`/watchlists`  40+ themed lists — AI, Crypto, Nuclear, Space, Solar and more\n"
             "`/watchlist add`  Add a ticker to your personal saved watchlist\n"
             "`/watchlist remove`  Remove a ticker from your personal watchlist\n"
+            "`/watchlist clear`  Wipe your entire watchlist in one click\n"
             "`/watchlist view`  Show all tickers in your watchlist\n"
             "`/watchlist scan`  Run full EMA tier scan on your saved tickers\n"
+            "`/watchlist import`  Upload a .txt watchlist (TICKER,TICKER,...) → instant EMA scan\n"
             "`/gapscanner`  Live gap-up / gap-down scanner across 200+ stocks\n"
             "`/generatecsv`  Custom filtered CSV — set gain%, volume, tier\n"
             "`/csv`  Upload your own Finviz/TradingView CSV → auto tier scan"
@@ -3438,7 +4213,9 @@ async def slash_help(interaction: discord.Interaction):
             "`/alert hotsector`  DM when a sector cracks the top hot list\n"
             "`/alert target`  DM when a stock hits a specific price\n"
             "`/alerts`  See all your active alerts\n"
-            "`/removealert`  Delete an alert by ID"
+            "`/removealert`  Delete an alert by ID\n"
+            "`/alert mute`  Cancel ALL your active price alerts at once\n"
+            "`/stop`  Dismiss / acknowledge the previous command"
         ),
         inline=False,
     )
@@ -3468,6 +4245,18 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="\u200b", value="\u200b", inline=False)
 
     embed.add_field(
+        name="🏦  IBKR Integration",
+        value=(
+            "`/ibkr setup`  Save your IBKR Flex token + Query ID (private)\n"
+            "`/ibkr sync`   Fetch live holdings → compute ATR stops & 3R targets → set DM alerts\n"
+            "`/ibkr positions`  View open positions with live EMA tier and P&L"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+    embed.add_field(
         name="⚙️  Account",
         value=(
             "`/mode`  Set risk level based on account P&L (Aggressive / Neutral / Defensive)\n"
@@ -3483,7 +4272,7 @@ async def slash_help(interaction: discord.Interaction):
         name="📊  Trade Log & History",
         value=(
             "`/history`  Your closed trades with P&L — date, ticker, buy/sell price, profit\n"
-            "`/commandlog`  Recent slash command activity across all users"
+            "`/commandlog`  Your personal slash command history"
         ),
         inline=False,
     )
@@ -3501,8 +4290,9 @@ async def slash_help(interaction: discord.Interaction):
 
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
-token = os.environ.get("DISCORD_TOKEN")
-if not token:
-    raise RuntimeError("DISCORD_TOKEN environment variable is not set.")
-
-bot.run(token)
+if __name__ == "__main__":
+    load_dotenv()
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise RuntimeError("DISCORD_TOKEN environment variable is not set.")
+    bot.run(token)

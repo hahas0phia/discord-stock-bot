@@ -1,0 +1,21 @@
+version: 1.0
+description: Discord EMA Bot with Flask Health Check
+runtime: python
+env: flex
+service: discord-bot
+
+# Main entry point - runs the Flask health check + Discord bot
+entrypoint: gunicorn -w 1 -b 0.0.0.0:8080 --timeout 300 --access-logfile - --error-logfile - wsgi:app
+
+# Environment variables are set via Oracle Cloud Console or in .env
+# See .env.example for required variables
+
+# Health check configuration
+runtime_config:
+  healthCheck:
+    - path: "/health"
+      port: 8080
+      interval: 30
+      timeout: 10
+      unhealthyThreshold: 3
+      healthyThreshold: 2
