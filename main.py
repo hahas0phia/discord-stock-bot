@@ -47,9 +47,10 @@ threading.Thread(target=_run_flask, daemon=True).start()
 # ─── Database Configuration (PostgreSQL via SQLAlchemy) ──────────────────────
 
 # Try to use DATABASE_URL first (Oracle Cloud), fallback to SQLite for local dev
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "sqlite:////tmp/alerts.db"  # Local fallback for development
+DATABASE_URL = "sqlite:////home/ubuntu/discord-stock-bot/data/bot.db"
+
+os.environ.get(
+    "DATABASE_URL", "sqlite:////tmp/alerts.db"  # Local fallback for development
 )
 
 # Create engine with connection pooling
@@ -96,7 +97,7 @@ def _db():
         conn = psycopg2.connect(DATABASE_URL)
     else:
         # SQLite connection
-        conn = sqlite3.connect(DATABASE_URL.replace("sqlite:////", ""))
+        conn = sqlite3.connect("/home/ubuntu/discord-stock-bot/data/bot.db")
         conn.row_factory = sqlite3.Row
     try:
         yield conn
