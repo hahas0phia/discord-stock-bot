@@ -172,8 +172,8 @@ def api_trades(user_id: int):
             cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
             trades = list(cursor.execute(
                 """SELECT id, ticker, shares, entry, stop, target, risk_dollars, status, created_at, exit_price, closed_at
-                   FROM trades WHERE user_id = ? AND status IN ('CLOSED', 'HIT_TARGET', 'HIT_STOP')
-                   ORDER BY closed_at DESC LIMIT ?""",
+                   FROM trades WHERE user_id = ? AND status != 'ACTIVE'
+                   ORDER BY COALESCE(closed_at, created_at) DESC LIMIT ?""",
                 (user_id, limit)
             ).fetchall())
 
@@ -206,6 +206,48 @@ def api_trades(user_id: int):
             "success": True,
             "trades": trades_data,
             "count": len(trades_data)
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/active-trades", methods=["GET"])
+@_require_web_token
+def api_active_trades(user_id: int):
+    """Fetch user's active trades."""
+    try:
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, "cursor") else conn
+            trades = list(
+                cursor.execute(
+                    """SELECT id, ticker, shares, entry, stop, target, risk_dollars, status, created_at
+                       FROM trades WHERE user_id = ? AND status = 'ACTIVE'
+                       ORDER BY created_at DESC""",
+                    (user_id,),
+                ).fetchall()
+            )
+
+        trades_data = [
+            {
+                "id": trade[0],
+                "ticker": trade[1],
+                "shares": float(trade[2]),
+                "entry_price": float(trade[3]),
+                "stop": float(trade[4]),
+                "target": float(trade[5]),
+                "risk_dollars": float(trade[6]),
+                "status": trade[7],
+                "created_at": trade[8],
+            }
+            for trade in trades
+        ]
+
+        return jsonify({
+            "success": True,
+            "trades": trades_data,
+            "summary": {
+                "count": len(trades_data),
+                "total_risk": sum(trade["risk_dollars"] for trade in trades_data),
+            }
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)[:100]}), 500
@@ -280,23 +322,12 @@ def api_alerts(user_id: int):
 def api_scan(user_id: int):
     """Get EMA scan data (leading/mediocre/lagging stocks)."""
     try:
-        with _db() as conn:
-            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
-            # This is mock data - in production, would call actual scan logic
-            return jsonify({
-                "success": True,
-                "leading": [
-                    {"symbol": "AAPL", "price": 181.25, "change": 5.2, "volume": 5200000},
-                    {"symbol": "NVDA", "price": 920.15, "change": 8.1, "volume": 4800000},
-                    {"symbol": "MSFT", "price": 425.50, "change": 3.7, "volume": 3500000}
-                ],
-                "mediocre": [
-                    {"symbol": "PLTR", "price": 153.19, "change": 0.8, "volume": 2100000}
-                ],
-                "lagging": [
-                    {"symbol": "SOFI", "price": 8.50, "change": -5.3, "volume": 1800000}
-                ]
-            }), 200
+        snapshot = get_dashboard_market_cache()
+        return jsonify({
+            "success": True,
+            "generated_at": snapshot["generated_at"],
+            **snapshot["scan"],
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)[:100]}), 500
 
@@ -305,13 +336,11 @@ def api_scan(user_id: int):
 def api_premarket(user_id: int):
     """Get pre-market gap scanner data."""
     try:
+        snapshot = get_dashboard_market_cache()
         return jsonify({
             "success": True,
-            "gaps": [
-                {"symbol": "TSLA", "close": 245.30, "premarket": 253.75, "gap_pct": 3.44, "volume": 2500000},
-                {"symbol": "AAPL", "close": 180.25, "premarket": 185.90, "gap_pct": 3.13, "volume": 5200000},
-                {"symbol": "NVDA", "close": 920.15, "premarket": 905.60, "gap_pct": -1.58, "volume": 1800000}
-            ]
+            "generated_at": snapshot["generated_at"],
+            **snapshot["premarket"],
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)[:100]}), 500
@@ -321,14 +350,11 @@ def api_premarket(user_id: int):
 def api_leaders(user_id: int):
     """Get top 1-month performance leaders."""
     try:
+        snapshot = get_dashboard_market_cache()
         return jsonify({
             "success": True,
-            "leaders": [
-                {"symbol": "AAPL", "price": 180.25, "change_1m": 18.5, "volume": 5200000},
-                {"symbol": "NVDA", "price": 920.15, "change_1m": 22.3, "volume": 4800000},
-                {"symbol": "MSFT", "price": 425.50, "change_1m": 14.7, "volume": 3500000},
-                {"symbol": "AMZN", "price": 199.34, "change_1m": 11.2, "volume": 6100000}
-            ]
+            "generated_at": snapshot["generated_at"],
+            **snapshot["leaders"],
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)[:100]}), 500
@@ -338,12 +364,11 @@ def api_leaders(user_id: int):
 def api_after(user_id: int):
     """Get after-hours movers (ADR > 5%, Vol $100M+)."""
     try:
+        snapshot = get_dashboard_market_cache()
         return jsonify({
             "success": True,
-            "after_hours": [
-                {"symbol": "TSLA", "price": 250.90, "change": 2.29, "adr": 6.2, "volume_usd": 560000000},
-                {"symbol": "NVDA", "price": 915.30, "change": -0.52, "adr": 7.1, "volume_usd": 420000000}
-            ]
+            "generated_at": snapshot["generated_at"],
+            **snapshot["after"],
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)[:100]}), 500
@@ -353,15 +378,11 @@ def api_after(user_id: int):
 def api_sectors(user_id: int):
     """Get hot sectors and their performance."""
     try:
+        snapshot = get_dashboard_market_cache()
         return jsonify({
             "success": True,
-            "hot_sectors": [
-                {"name": "Technology", "change": 18.5, "hot": True},
-                {"name": "Healthcare", "change": 12.3, "hot": False},
-                {"name": "Financials", "change": 3.2, "hot": False},
-                {"name": "Energy", "change": -2.1, "hot": False},
-                {"name": "Real Estate", "change": 1.5, "hot": False}
-            ]
+            "generated_at": snapshot["generated_at"],
+            **snapshot["sectors"],
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)[:100]}), 500
@@ -371,19 +392,35 @@ def api_sectors(user_id: int):
 def api_sector_stocks(user_id: int, sector: str):
     """Get top leading stocks in a specific sector."""
     try:
-        sector_stocks = {
-            "tech": [
-                {"symbol": "AAPL", "price": 181.25, "tier": "Leading", "change": 5.2},
-                {"symbol": "NVDA", "price": 920.15, "tier": "Leading", "change": 8.1},
-                {"symbol": "MSFT", "price": 425.50, "tier": "Leading", "change": 3.7}
-            ],
-            "health": [
-                {"symbol": "JNJ", "price": 160.50, "tier": "Leading", "change": 4.2},
-                {"symbol": "UNH", "price": 485.30, "tier": "Leading", "change": 6.8}
-            ]
-        }
-        stocks = sector_stocks.get(sector[:4].lower(), [])
-        return jsonify({"success": True, "sector": sector, "stocks": stocks}), 200
+        snapshot = get_dashboard_market_cache()
+        stocks = snapshot["sector_stocks"].get(_sector_cache_key(sector), [])
+        return jsonify({
+            "success": True,
+            "generated_at": snapshot["generated_at"],
+            "sector": sector,
+            "stocks": stocks,
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/populate-market-data", methods=["POST"])
+@_require_web_token
+def api_populate_market_data(user_id: int):
+    """Force-refresh the market tables used by the dashboard tabs."""
+    try:
+        snapshot = refresh_dashboard_market_cache(force=True)
+        return jsonify({
+            "success": True,
+            "message": "Market tables refreshed successfully.",
+            "generated_at": snapshot["generated_at"],
+            "counts": {
+                "leading": len(snapshot["scan"]["leading"]),
+                "premarket": len(snapshot["premarket"]["gaps"]),
+                "leaders": len(snapshot["leaders"]["leaders"]),
+                "after_hours": len(snapshot["after"]["after_hours"]),
+                "sectors": len(snapshot["sectors"]["hot_sectors"]),
+            },
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)[:100]}), 500
 
@@ -1505,6 +1542,181 @@ def fetch_data(tickers: list = None) -> pd.DataFrame:
     if not df_out.empty:
         df_out = df_out.sort_values("Perf1M", ascending=False).reset_index(drop=True)
     return df_out
+
+_DASHBOARD_MARKET_CACHE_LOCK = threading.Lock()
+_DASHBOARD_MARKET_CACHE: dict | None = None
+_DASHBOARD_MARKET_REFRESHED_AT: datetime | None = None
+_DASHBOARD_MARKET_REFRESH_INTERVAL = timedelta(hours=1)
+
+def _empty_dashboard_market_snapshot() -> dict:
+    return {
+        "generated_at": None,
+        "scan": {"leading": [], "mediocre": [], "lagging": []},
+        "premarket": {"gaps": []},
+        "leaders": {"leaders": []},
+        "after": {"after_hours": []},
+        "sectors": {"hot_sectors": []},
+        "sector_stocks": {},
+    }
+
+def _sector_cache_key(name: str) -> str:
+    normalized = str(name or "").strip().lower()
+    if normalized.startswith("techn"):
+        return "tech"
+    if normalized.startswith("health"):
+        return "health"
+    if normalized.startswith("finan"):
+        return "finance"
+    if normalized.startswith("energy"):
+        return "energy"
+    if normalized.startswith("real"):
+        return "real"
+    return normalized[:4]
+
+def _build_dashboard_market_snapshot(df: pd.DataFrame) -> dict:
+    snapshot = _empty_dashboard_market_snapshot()
+    snapshot["generated_at"] = datetime.utcnow().isoformat()
+    if df.empty:
+        return snapshot
+
+    def _volume_shares(row: pd.Series) -> int:
+        close = max(float(row.get("Close", 0) or 0), 0.01)
+        dollar_vol = max(float(row.get("DollarVol_M", 0) or 0), 0)
+        return int((dollar_vol * 1_000_000) / close)
+
+    def _scan_rows(subset: pd.DataFrame) -> list[dict]:
+        return [
+            {
+                "symbol": row["Ticker"],
+                "price": round(float(row["Close"]), 2),
+                "change": round(float(row["Perf1D"]), 2),
+                "volume": _volume_shares(row),
+            }
+            for _, row in subset.iterrows()
+        ]
+
+    leading = df[df["Watchlist"] == "Leading"].nlargest(8, "Perf1M")
+    mediocre = df[df["Watchlist"] == "Mediocre"].nlargest(8, "Perf1M")
+    lagging = df[df["Watchlist"] == "Lagging"].nsmallest(8, "Perf1D")
+    snapshot["scan"] = {
+        "leading": _scan_rows(leading),
+        "mediocre": _scan_rows(mediocre),
+        "lagging": _scan_rows(lagging),
+    }
+
+    gaps = df[df["Gap"].abs() >= 2.0].sort_values("Gap", ascending=False).head(20)
+    snapshot["premarket"] = {
+        "gaps": [
+            {
+                "symbol": row["Ticker"],
+                "close": round(float(row["Close"]), 2),
+                "premarket": round(float(row["Close"]) * (1 + (float(row["Gap"]) / 100)), 2),
+                "gap_pct": round(float(row["Gap"]), 2),
+                "volume": _volume_shares(row),
+            }
+            for _, row in gaps.iterrows()
+        ]
+    }
+
+    leaders = df[df["Perf1M"] >= 10].nlargest(20, "Perf1M")
+    if leaders.empty:
+        leaders = df.nlargest(20, "Perf1M")
+    snapshot["leaders"] = {
+        "leaders": [
+            {
+                "symbol": row["Ticker"],
+                "price": round(float(row["Close"]), 2),
+                "change_1m": round(float(row["Perf1M"]), 2),
+                "volume": _volume_shares(row),
+            }
+            for _, row in leaders.iterrows()
+        ]
+    }
+
+    after = df[
+        (df["ADR"] > 5) &
+        (df["DollarVol_M"] > 100) &
+        (df["Watchlist"] == "Leading")
+    ].sort_values("ADR", ascending=False).head(20)
+    snapshot["after"] = {
+        "after_hours": [
+            {
+                "symbol": row["Ticker"],
+                "price": round(float(row["Close"]), 2),
+                "change": round(float(row["Perf1D"]), 2),
+                "adr": round(float(row["ADR"]), 2),
+                "volume_usd": int(float(row["DollarVol_M"]) * 1_000_000),
+            }
+            for _, row in after.iterrows()
+        ]
+    }
+
+    sector_stats = (
+        df.groupby("Sector")
+        .agg(AvgPerf1M=("Perf1M", "mean"), Count=("Ticker", "count"))
+        .round(2)
+        .reset_index()
+        .sort_values("AvgPerf1M", ascending=False)
+    )
+    hot_sectors = sector_stats[sector_stats["Count"] >= 2].head(8)
+    if hot_sectors.empty:
+        hot_sectors = sector_stats.head(8)
+    snapshot["sectors"] = {
+        "hot_sectors": [
+            {
+                "name": row["Sector"],
+                "change": round(float(row["AvgPerf1M"]), 2),
+                "hot": idx < 3,
+            }
+            for idx, (_, row) in enumerate(hot_sectors.iterrows())
+        ]
+    }
+
+    sector_stocks: dict[str, list[dict]] = {}
+    for sector_name, group in df.groupby("Sector"):
+        ordered = group.sort_values(["Watchlist", "Perf1M"], ascending=[True, False]).head(12)
+        sector_stocks[_sector_cache_key(sector_name)] = [
+            {
+                "symbol": row["Ticker"],
+                "price": round(float(row["Close"]), 2),
+                "tier": row["Watchlist"],
+                "change": round(float(row["Perf1M"]), 2),
+            }
+            for _, row in ordered.iterrows()
+        ]
+    snapshot["sector_stocks"] = sector_stocks
+    return snapshot
+
+def refresh_dashboard_market_cache(force: bool = False) -> dict:
+    global _DASHBOARD_MARKET_CACHE, _DASHBOARD_MARKET_REFRESHED_AT
+
+    with _DASHBOARD_MARKET_CACHE_LOCK:
+        if (
+            not force and
+            _DASHBOARD_MARKET_CACHE is not None and
+            _DASHBOARD_MARKET_REFRESHED_AT is not None and
+            datetime.utcnow() - _DASHBOARD_MARKET_REFRESHED_AT < _DASHBOARD_MARKET_REFRESH_INTERVAL
+        ):
+            return _DASHBOARD_MARKET_CACHE
+
+    snapshot = _build_dashboard_market_snapshot(fetch_data())
+    with _DASHBOARD_MARKET_CACHE_LOCK:
+        _DASHBOARD_MARKET_CACHE = snapshot
+        _DASHBOARD_MARKET_REFRESHED_AT = datetime.utcnow()
+        return _DASHBOARD_MARKET_CACHE
+
+def get_dashboard_market_cache(force: bool = False) -> dict:
+    with _DASHBOARD_MARKET_CACHE_LOCK:
+        has_cache = _DASHBOARD_MARKET_CACHE is not None
+        is_fresh = (
+            has_cache and
+            _DASHBOARD_MARKET_REFRESHED_AT is not None and
+            datetime.utcnow() - _DASHBOARD_MARKET_REFRESHED_AT < _DASHBOARD_MARKET_REFRESH_INTERVAL
+        )
+        if not force and is_fresh:
+            return _DASHBOARD_MARKET_CACHE
+
+    return refresh_dashboard_market_cache(force=force or not has_cache)
 
 def df_to_file(df: pd.DataFrame, filename: str) -> discord.File:
     buf = io.BytesIO(df.to_csv(index=False).encode())
@@ -2760,6 +2972,30 @@ async def _morning_watchlist_brief():
         except Exception as e:
             print(f"[Morning Brief] Error: {e}")
 
+_dashboard_market_refresh_started = False
+
+async def _refresh_dashboard_market_data_loop():
+    """Background loop: refresh dashboard market tables every hour."""
+    global _dashboard_market_refresh_started
+    if _dashboard_market_refresh_started:
+        return
+    _dashboard_market_refresh_started = True
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        try:
+            snapshot = await asyncio.to_thread(refresh_dashboard_market_cache, True)
+            print(
+                "[Dashboard Market] Refreshed "
+                f"({snapshot['generated_at']}) "
+                f"L:{len(snapshot['scan']['leading'])} "
+                f"P:{len(snapshot['premarket']['gaps'])} "
+                f"Leaders:{len(snapshot['leaders']['leaders'])}"
+            )
+        except Exception as e:
+            print(f"[Dashboard Market] Refresh error: {e}")
+        await asyncio.sleep(3600)
+
 @bot.event
 async def on_ready():
     """Bot startup: sync commands and start background monitors."""
@@ -2777,6 +3013,7 @@ async def on_ready():
     bot.loop.create_task(_monitor_trades())
     bot.loop.create_task(_monitor_watchlists())
     bot.loop.create_task(_morning_watchlist_brief())
+    bot.loop.create_task(_refresh_dashboard_market_data_loop())
     
     print("   ✅ All background monitors started")
 
@@ -4933,6 +5170,66 @@ async def slash_ping(interaction: discord.Interaction):
 
 # ─── /help ────────────────────────────────────────────────────────────────────
 
+@bot.tree.command(name="riskcalc", description="Calculate shares based on portfolio risk and stop %")
+@app_commands.describe(
+    portfolio="Portfolio size, e.g. 100000",
+    risk_percent="Risk per trade as a percent, e.g. 1",
+    entry="Entry price, e.g. 73",
+    stop_percent="Stop loss percent below entry, e.g. 7",
+    target_r="Target multiple of R, default 3",
+)
+async def slash_riskcalc(
+    interaction: discord.Interaction,
+    portfolio: float,
+    risk_percent: float,
+    entry: float,
+    stop_percent: float,
+    target_r: float = 3.0,
+):
+    if portfolio <= 0 or risk_percent <= 0 or entry <= 0 or stop_percent <= 0 or stop_percent >= 100 or target_r <= 0:
+        await interaction.response.send_message(
+            "Please use positive numbers, and keep stop loss below 100%.",
+            ephemeral=True,
+        )
+        return
+
+    risk_dollars = portfolio * (risk_percent / 100)
+    stop_distance = entry * (stop_percent / 100)
+    stop_price = entry - stop_distance
+    position_value = risk_dollars / (stop_percent / 100)
+    shares = int(position_value / entry)
+    actual_risk = shares * stop_distance
+    target = entry + ((entry - stop_price) * target_r)
+
+    if shares <= 0:
+        await interaction.response.send_message(
+            "The calculated share size is 0. Try a larger portfolio, higher risk %, or a tighter stop.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title="📐 Risk Calculator",
+        description="Position size based on your portfolio risk and stop distance.",
+        color=0x2DC653,
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="Portfolio", value=f"${portfolio:,.2f}", inline=True)
+    embed.add_field(name="Risk %", value=f"{risk_percent:.2f}%", inline=True)
+    embed.add_field(name="Max Risk ($R)", value=f"${risk_dollars:,.2f}", inline=True)
+    embed.add_field(name="Entry", value=f"${entry:,.2f}", inline=True)
+    embed.add_field(name="Stop %", value=f"{stop_percent:.2f}%", inline=True)
+    embed.add_field(name="Stop Price", value=f"${stop_price:,.2f}", inline=True)
+    embed.add_field(name="Position Value", value=f"${position_value:,.2f}", inline=True)
+    embed.add_field(name="Shares", value=str(shares), inline=True)
+    embed.add_field(name="Actual Risk", value=f"${actual_risk:,.2f}", inline=True)
+    embed.add_field(name="Target", value=f"${target:,.2f}", inline=True)
+    embed.add_field(name="Target R", value=f"{target_r:.2f}R", inline=True)
+    embed.add_field(name="Risk / Share", value=f"${stop_distance:,.2f}", inline=True)
+    embed.set_footer(text="Shares are rounded down so the real risk stays at or below your cap.")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 @bot.tree.command(name="help", description="Easy command guide")
 async def slash_help(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -5058,7 +5355,21 @@ async def slash_help(interaction: discord.Interaction):
         name="📊  Trade Log & History",
         value=(
             "`/history`  Your closed trades with P&L — date, ticker, buy/sell price, profit\n"
-            "`/commandlog`  Your personal slash command history"
+            "`/commandlog`  Your personal slash command history\n"
+            "`/riskcalc`  Calculate position size from portfolio risk and stop %"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+    embed.add_field(
+        name="🌐  Web Dashboard",
+        value=(
+            "`/web token`  Generate your private dashboard access token\n"
+            "`/web tokens`  View active dashboard tokens and last use\n"
+            "`/web revoke`  Revoke all dashboard tokens immediately\n"
+            "`/riskcalc`  Calculate position size from portfolio risk and stop %"
         ),
         inline=False,
     )
