@@ -3,25 +3,28 @@ WSGI application wrapper for Gunicorn in production.
 This allows the Flask app to run on Oracle Cloud App Container Runtime.
 """
 import os
-import sys
 from dotenv import load_dotenv
 
 # Load environment variables from .env file (if it exists locally)
 load_dotenv()
 
 # Import the Flask app and initialize database
-from main import _flask_app, init_db, bot
+from main import _flask_app, init_db, start_discord_bot
 
-# Initialize database on startup
 try:
     init_db()
-    print("✅ Database initialized")
+    print("[WSGI] Database initialized")
 except Exception as e:
-    print(f"⚠️ Database initialization warning: {e}")
+    print(f"[WSGI] Database initialization warning: {e}")
 
-# Export the Flask app for Gunicorn
+try:
+    if os.getenv("DISCORD_TOKEN"):
+        start_discord_bot(background=True)
+        print("[WSGI] Discord bot background thread started")
+    else:
+        print("[WSGI] DISCORD_TOKEN not set; Discord bot not started")
+except Exception as e:
+    print(f"[WSGI] Discord bot startup warning: {e}")
+
 app = _flask_app
-
-# Run Discord bot in background (started by main.py on import)
-print("✅ Discord bot background tasks initialized")
-print(f"✅ Flask app ready on port {os.getenv('PORT', 8080)}")
+print(f"[WSGI] Flask app ready on port {os.getenv('PORT', 8080)}")

@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard Hub - Full Suite</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+        :root { --panel: #1a1a1a; --bg: #0f172a; --border: #334155; }
+        body { background-color: var(--bg); color: #f1f5f9; font-family: 'JetBrains Mono', monospace; margin: 0; }
+        .card { background-color: var(--panel); border: 1px solid var(--border); }
+        .input-dark { background-color: #020617; border: 1px solid var(--border); color: white; padding: 0.4rem; border-radius: 4px; outline: none; width: 100%; }
+        .input-dark:focus { border-color: #3b82f6; }
+        .tab-button { padding: 8px 12px; border: 1px solid #334155; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: bold; margin-right: 4px; margin-bottom: 4px; }
+        .tab-button.active { background-color: #3b82f6; border-color: #3b82f6; }
+        .tab-button:hover { background-color: #1e3a8a; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        .hot-badge { animation: pulse 2s infinite; background-color: #10b981; color: white; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+        .btn-sm { padding: 4px 8px; font-size: 10px; }
+        .inline-buttons { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; justify-content: flex-end; align-items: flex-start; z-index: 9999; }
+        .modal-overlay.hidden { display: none; }
+        .modal-content { background: var(--panel); border: 2px solid #3b82f6; border-radius: 8px; padding: 20px; width: 90%; max-width: 420px; margin: 20px; }
+        .modal-close { float: right; font-size: 20px; cursor: pointer; color: #94a3b8; }
+        .modal-close:hover { color: #f1f5f9; }
+        .pnl-positive { background-color: rgba(16, 185, 129, 0.1); }
+        .pnl-negative { background-color: rgba(239, 68, 68, 0.1); }
+    </style>
+</head>
+<body class="p-4">
+
+<!-- Morning Watchlist Brief Modal -->
+<div id="watchlistModal" class="modal-overlay hidden">
+    <div class="modal-content">
+        <span class="modal-close" onclick="closeWatchlistModal()">✕</span>
+        <h2 class="text-xs font-bold text-blue-400 uppercase mb-3">☀️ Morning Watchlist Brief</h2>
+        <p class="text-[10px] text-slate-400 mb-4" id="briefDate">2026-03-27</p>
+
+        <div class="space-y-3">
+            <div class="border-l-4 border-green-500 pl-3">
+                <p class="text-xs font-bold text-green-400">🟢 Leading (3)</p>
+                <p class="text-[10px] text-slate-300 mt-1">NVDA $875.40 • AAPL $213.10 • META $512.30</p>
+            </div>
+            <div class="border-l-4 border-yellow-500 pl-3">
+                <p class="text-xs font-bold text-yellow-400">🟡 Mediocre (2)</p>
+                <p class="text-[10px] text-slate-300 mt-1">TSLA $175.20 • AMD $165.00</p>
+            </div>
+            <div class="border-l-4 border-red-500 pl-3">
+                <p class="text-xs font-bold text-red-400">🔴 Lagging (1)</p>
+                <p class="text-[10px] text-slate-300 mt-1">INTC $22.40</p>
+            </div>
+        </div>
+
+        <button onclick="closeWatchlistModal()" class="w-full mt-4 bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-xs font-bold">Got it!</button>
+    </div>
+</div>
+
+<!-- Header with Key Metrics -->
+<header class="card rounded-lg shadow-2xl border-l-4 border-l-blue-600 mb-4 p-6">
+    <div class="flex flex-col gap-4">
+        <!-- Title Row -->
+        <div class="flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-bold tracking-tighter uppercase text-blue-500">Gemini Terminal Hub</h1>
+                <div class="text-[10px] text-slate-500 mt-1 uppercase">
+                    Sync: <span id="last-sync">14:35:22</span> | Next: <span id="timer" class="text-orange-400">60s</span> | <span id="market-status" class="font-bold text-emerald-400">MARKET OPEN</span>
+                </div>
+            </div>
+            <button onclick="syncData()" class="bg-blue-600 hover:bg-blue-700 px-4 py-1 rounded text-xs font-bold uppercase h-fit">Sync Now</button>
+        </div>
+
+        <!-- All Metrics in Single Row -->
+        <div class="grid grid-cols-9 gap-3 text-center text-[8px]">
+            <div>
+                <p class="text-slate-500 uppercase">Total Equity</p>
+                <p id="m-equity" class="text-sm font-bold font-mono text-blue-400">$698.27</p>
+            </div>
+            <div>
+                <p class="text-slate-500 uppercase">Open PnL %</p>
+                <p id="m-pnl" class="text-sm font-bold text-red-400 font-mono">-6.13%</p>
+            </div>
+            <div>
+                <p class="text-slate-500 uppercase">Win Rate</p>
+                <p id="m-winrate" class="text-sm font-bold font-mono">60%</p>
+            </div>
+            <div>
+                <p class="text-slate-500 uppercase">Total Risk</p>
+                <p id="f-risk-header" class="text-sm font-bold text-red-400 font-mono">$11.15</p>
+            </div>
+            <div>
+                <p class="text-slate-500 uppercase">Biggest Win</p>
+                <p class="text-sm font-bold text-emerald-400 font-mono">+$637.50</p>
+            </div>
+            <div>
+                <p class="text-slate-500 uppercase">Biggest Loss</p>
+                <p class="text-sm font-bold text-red-500 font-mono">-$180.00</p>
+            </div>
+            <div>
+                <p class="text-slate-500 uppercase">Trades</p>
+                <p class="text-sm font-bold font-mono">25</p>
+            </div>
+            <div>
+                <p class="text-slate-500 uppercase">Net Profit</p>
+                <p class="text-sm font-bold text-emerald-400 font-mono">+$1,320</p>
+            </div>
+            <div>
+                <div class="flex justify-center items-center gap-1">
+                    <div class="w-6 bg-slate-900/50 rounded h-1 overflow-hidden">
+                        <div class="bg-emerald-500 h-full" style="width: 60%"></div>
+                    </div>
+                </div>
+                <p class="text-slate-500 uppercase mt-1">Win %</p>
+                <p class="text-sm font-bold text-emerald-400">60%</p>
+            </div>
+        </div>
+    </div>
+</header>
+
+<!-- Tabs for Different Sections -->
+<div class="card p-4 rounded-lg border-b border-slate-800 mb-6">
+    <div class="flex flex-wrap">
+        <button onclick="switchTab('portfolio')" class="tab-button active" id="tab-portfolio">📊 Portfolio</button>
+        <button onclick="switchTab('scan')" class="tab-button" id="tab-scan">📈 Scan</button>
+        <button onclick="switchTab('premarket')" class="tab-button" id="tab-premarket">🌅 Pre-Market</button>
+        <button onclick="switchTab('leaders')" class="tab-button" id="tab-leaders">🏆 Leaders</button>
+        <button onclick="switchTab('after')" class="tab-button" id="tab-after">🌙 After Hours</button>
+        <button onclick="switchTab('sectors')" class="tab-button" id="tab-sectors">🏭 Sectors</button>
+        <button onclick="switchTab('tools')" class="tab-button" id="tab-tools">🛠️ Tools</button>
+    </div>
+</div>
+
+<!-- Main Content Area -->
+<div class="grid grid-cols-12 gap-6">
+    <div class="col-span-12 lg:col-span-8 space-y-4">
+
+        <!-- PORTFOLIO TAB -->
+        <div id="content-portfolio" class="content-tab">
+            <!-- Live Intelligence -->
+            <div class="card p-4 rounded-lg border-t-2 border-t-blue-500 mb-4">
+                <h2 class="text-xs font-bold text-slate-400 uppercase mb-3">📰 Live Intelligence (Top Headlines)</h2>
+                <div id="news-container" class="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] max-h-40 overflow-y-auto">
+                    <div class="border-l-2 border-blue-500 pl-3 py-2 bg-slate-800/20 rounded">
+                        <p class="font-bold text-slate-200">Fed Keeps Rates Steady</p>
+                        <div class="text-[8px] text-blue-400">Reuters • 14:22</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Portfolio Monitor with Inline Buttons -->
+            <div class="card overflow-hidden rounded-lg mb-4">
+                <div class="p-4 border-b border-slate-800 bg-slate-900/30 flex justify-between items-center">
+                    <h2 class="text-xs font-bold text-slate-500 uppercase">📈 Portfolio Monitor</h2>
+                    <div class="inline-buttons">
+                        <button onclick="downloadPortfolioCSV()" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📥 CSV</button>
+                        <button onclick="downloadPortfolioTXT()" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📥 TXT</button>
+                        <button onclick="document.getElementById('portfolio-upload').click()" class="bg-emerald-600 hover:bg-emerald-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📤 Upload</button>
+                        <input type="file" id="portfolio-upload" class="hidden" accept=".csv,.txt" onchange="uploadPortfolioFile(this)">
+                    </div>
+                </div>
+                <div class="overflow-x-auto max-h-48 overflow-y-auto">
+                    <table class="w-full text-left text-[10px]">
+                        <thead class="bg-slate-900/50 text-slate-400 uppercase text-[8px] border-b border-slate-800 sticky top-0">
+                            <tr>
+                                <th class="p-3">Symbol</th><th class="p-3">Shares</th><th class="p-3">Entry</th><th class="p-3">Live</th><th class="p-3">PnL</th><th class="p-3">Risk</th><th class="p-3">Stop</th><th class="p-3">Target</th>
+                            </tr>
+                        </thead>
+                        <tbody id="portfolio-body">
+                            <tr class="border-b border-slate-800/50 hover:bg-slate-800/30 pnl-negative">
+                                <td class="p-3 font-bold text-blue-400">PLTR</td>
+                                <td class="p-3">2</td>
+                                <td class="p-3">$153.19</td>
+                                <td class="p-3 font-bold">$143.06</td>
+                                <td class="p-3 text-red-400 font-bold">-$20.26</td>
+                                <td class="p-3 text-red-400">$4.60</td>
+                                <td class="p-3">$150.89</td>
+                                <td class="p-3">$160.08</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Charts Row - Fixed Height -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
+                <div class="card p-4 rounded-lg" style="height: 280px;">
+                    <h3 class="text-[10px] text-slate-500 uppercase mb-3 font-bold">📈 Live Equity Curve</h3>
+                    <div style="height: 220px;"><canvas id="equityCurveChart"></canvas></div>
+                </div>
+                <div class="card p-4 rounded-lg" style="height: 280px;">
+                    <h3 class="text-[10px] text-slate-500 uppercase mb-3 font-bold">📊 Trade Performance Distribution</h3>
+                    <div style="height: 220px;"><canvas id="performanceChart"></canvas></div>
+                </div>
+            </div>
+
+            <!-- Closed Trade History (Ledger) -->
+            <div class="card overflow-hidden rounded-lg border-t-2 border-t-slate-700 mb-4">
+                <div class="p-4 border-b border-slate-800 bg-slate-900/30">
+                    <h2 class="text-xs font-bold text-slate-400 uppercase">📋 Closed Trade History (Ledger)</h2>
+                </div>
+                <div class="max-h-56 overflow-y-auto">
+                    <table class="w-full text-left text-[10px]">
+                        <thead class="bg-slate-900/50 text-slate-500 uppercase text-[8px] sticky top-0 z-10 border-b border-slate-800">
+                            <tr>
+                                <th class="p-3">Date</th>
+                                <th class="p-3">Symbol</th>
+                                <th class="p-3">Entry</th>
+                                <th class="p-3">Exit</th>
+                                <th class="p-3">PnL ($)</th>
+                                <th class="p-3">Thesis</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-800/50" id="trades-body">
+                            <tr class="hover:bg-slate-800/30">
+                                <td class="p-3">2026-03-24</td>
+                                <td class="p-3 font-bold text-blue-400">AAPL</td>
+                                <td class="p-3">$180.25</td>
+                                <td class="p-3">$188.50</td>
+                                <td class="p-3 text-emerald-400 font-bold">+$410.00</td>
+                                <td class="p-3 text-slate-400">Strong breakout above 21 EMA</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- SCAN TAB -->
+        <div id="content-scan" class="content-tab hidden">
+            <div class="card p-6 rounded-lg">
+                <h2 class="text-xs font-bold text-blue-500 uppercase mb-4 pb-2 border-b border-slate-800">📈 3-Tier EMA Scan Results</h2>
+                <div class="space-y-4"></div>
+            </div>
+        </div>
+
+        <!-- PRE-MARKET TAB -->
+        <div id="content-premarket" class="content-tab hidden">
+            <div class="card p-6 rounded-lg">
+                <h2 class="text-xs font-bold text-orange-400 uppercase mb-4">🌅 Pre-Market Gap Scanner (> 2%)</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-[11px]">
+                        <thead class="bg-slate-900/50 text-slate-400 uppercase text-[9px] border-b border-slate-800">
+                            <tr><th class="p-3">Symbol</th><th class="p-3">Close</th><th class="p-3">Pre-Market</th><th class="p-3">Gap %</th><th class="p-3">Volume</th></tr>
+                        </thead>
+                        <tbody id="premarket-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- LEADERS TAB -->
+        <div id="content-leaders" class="content-tab hidden">
+            <div class="card p-6 rounded-lg">
+                <h2 class="text-xs font-bold text-emerald-400 uppercase mb-4">🏆 Top Leaders (1-Month Performance)</h2>
+                <div id="leaders-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+            </div>
+        </div>
+
+        <!-- AFTER HOURS TAB -->
+        <div id="content-after" class="content-tab hidden">
+            <div class="card p-6 rounded-lg">
+                <h2 class="text-xs font-bold text-purple-400 uppercase mb-4">🌙 After-Hours Movers (ADR > 5%, Vol $100M+)</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-[11px]">
+                        <thead class="bg-slate-900/50 text-slate-400 uppercase text-[9px] border-b border-slate-800">
+                            <tr><th class="p-3">Symbol</th><th class="p-3">After-Price</th><th class="p-3">Change %</th><th class="p-3">ADR</th><th class="p-3">Volume ($)</th></tr>
+                        </thead>
+                        <tbody id="after-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTORS TAB -->
+        <div id="content-sectors" class="content-tab hidden">
+            <div class="card p-6 rounded-lg">
+                <h2 class="text-xs font-bold text-cyan-400 uppercase mb-4 pb-2 border-b border-slate-800">🏭 Sector Analysis</h2>
+                <div class="mb-4">
+                    <label class="text-xs font-bold text-slate-500 uppercase block mb-2">Select Sector to View Top Leading Stocks</label>
+                    <select id="sector-select" class="input-dark" onchange="displaySectorStocks()">
+                        <option value="tech">Technology</option>
+                        <option value="health">Healthcare</option>
+                        <option value="finance">Financials</option>
+                        <option value="energy">Energy</option>
+                        <option value="real">Real Estate</option>
+                    </select>
+                </div>
+                <div>
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-xs font-bold text-green-400 uppercase" id="sector-name">🟢 Top Leading Stocks in Technology</h3>
+                        <div class="inline-buttons">
+                            <button onclick="exportSectorStocks()" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📥 CSV</button>
+                            <button onclick="exportSectorStocks('txt')" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📥 TXT</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3" id="sector-stocks"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TOOLS TAB -->
+        <div id="content-tools" class="content-tab hidden">
+            <div class="card p-6 rounded-lg space-y-4">
+                <h2 class="text-xs font-bold text-cyan-400 uppercase mb-4 pb-2 border-b border-slate-800">🛠️ Data Tools & Import/Export</h2>
+
+                <div class="border-l-4 border-blue-500 pl-4">
+                    <h3 class="text-xs font-bold text-blue-400 uppercase mb-2">📋 Portfolio Management</h3>
+                    <div class="flex gap-2 flex-wrap">
+                        <button onclick="downloadPortfolioCSV()" class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-xs font-bold">📥 Download CSV</button>
+                        <button onclick="downloadPortfolioTXT()" class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-xs font-bold">📥 Download TXT</button>
+                        <button onclick="document.getElementById('portfolio-upload').click()" class="bg-emerald-600 hover:bg-emerald-700 px-3 py-2 rounded text-xs font-bold">📤 Upload File</button>
+                    </div>
+                </div>
+
+                <div class="border-l-4 border-purple-500 pl-4">
+                    <h3 class="text-xs font-bold text-purple-400 uppercase mb-2">🔍 Watchlist Management</h3>
+                    <div class="flex gap-2 flex-wrap">
+                        <button onclick="downloadWatchlistCSV()" class="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded text-xs font-bold">📥 Download CSV</button>
+                        <button onclick="downloadWatchlistTXT()" class="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded text-xs font-bold">📥 Download TXT</button>
+                        <button onclick="document.getElementById('watchlist-upload').click()" class="bg-emerald-600 hover:bg-emerald-700 px-3 py-2 rounded text-xs font-bold">📤 Upload File</button>
+                        <input type="file" id="watchlist-upload" class="hidden" accept=".csv,.txt" onchange="uploadWatchlistFile(this)">
+                    </div>
+                </div>
+
+                <div class="border-l-4 border-yellow-500 pl-4">
+                    <h3 class="text-xs font-bold text-yellow-400 uppercase mb-2">📊 Scan Results Export</h3>
+                    <div class="flex gap-2 flex-wrap">
+                        <button onclick="exportScanResults('leading')" class="bg-green-600 hover:bg-green-700 px-3 py-2 rounded text-xs font-bold">Leading Stocks</button>
+                        <button onclick="exportScanResults('mediocre')" class="bg-yellow-600 hover:bg-yellow-700 px-3 py-2 rounded text-xs font-bold">Mediocre Stocks</button>
+                        <button onclick="exportScanResults('lagging')" class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded text-xs font-bold">Lagging Stocks</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Right Sidebar: Trade Console, Watchlist, Alerts, Performance -->
+    <div class="col-span-12 lg:col-span-4 space-y-6">
+
+        <!-- Trade Console Form -->
+        <div class="card p-6 rounded-lg">
+            <h2 class="text-xs font-bold text-blue-500 uppercase mb-4 border-b border-slate-800 pb-2">Trade Console</h2>
+            <form id="trade-form" class="space-y-4 text-xs">
+                <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Date</label><input type="date" id="t-date" class="input-dark"></div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Symbol</label><input type="text" id="t-symbol" class="input-dark uppercase font-bold" placeholder="Ticker..."></div>
+                    <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Shares</label><input type="number" id="t-shares" class="input-dark"></div>
+                </div>
+                <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Entry Price ($)</label><input type="number" step="0.01" id="t-price" class="input-dark font-bold text-blue-400" oninput="calculateExits()"></div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div><label class="text-[9px] text-red-400 uppercase block mb-1">Stop (1.5%)</label><input type="number" step="0.01" id="t-stop" class="input-dark text-red-400"></div>
+                    <div><label class="text-[9px] text-emerald-400 uppercase block mb-1">Target (3R)</label><input type="number" step="0.01" id="t-target" class="input-dark text-emerald-400"></div>
+                </div>
+                <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Thesis</label><textarea id="t-thesis" class="input-dark h-16 resize-none" placeholder="Why?"></textarea></div>
+                <button type="button" onclick="logTrade()" class="w-full bg-blue-600 hover:bg-blue-700 py-3 rounded text-xs font-black uppercase shadow-lg transition">Execute Trade</button>
+            </form>
+        </div>
+
+        <!-- Watchlist Section -->
+        <div class="card p-4 rounded-lg">
+            <div class="flex justify-between items-center mb-3 border-b border-slate-800 pb-2">
+                <h2 class="text-xs font-bold text-blue-500 uppercase">🔍 Your Watchlist</h2>
+                <div class="inline-buttons">
+                    <button onclick="downloadWatchlistCSV()" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📥 CSV</button>
+                    <button onclick="downloadWatchlistTXT()" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📥 TXT</button>
+                    <button onclick="document.getElementById('watchlist-upload2').click()" class="bg-emerald-600 hover:bg-emerald-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📤 Upload</button>
+                    <input type="file" id="watchlist-upload2" class="hidden" accept=".txt,.csv" onchange="uploadWatchlistFile(this)">
+                </div>
+            </div>
+            <div id="watchlist-container" class="space-y-2">
+                <div class="bg-slate-900/30 p-3 rounded text-xs flex justify-between"><span class="font-bold text-blue-400">AMZN</span><span class="bg-green-900/50 text-green-400 px-2 py-1 rounded text-[9px]">🟢 Leading</span></div>
+            </div>
+        </div>
+
+        <!-- Alerts Section -->
+        <div class="card p-4 rounded-lg">
+            <h2 class="text-xs font-bold text-emerald-500 uppercase mb-3 border-b border-slate-800 pb-2">🔔 Active Alerts</h2>
+            <div id="alerts-container" class="space-y-2">
+                <div class="bg-green-900/20 border border-green-900/50 p-3 rounded text-xs">
+                    <p class="font-bold text-green-400 mb-1">📈 AAPL Entered Leading</p>
+                    <p class="text-slate-400 text-[9px]">Triggered: 2026-03-25 14:22</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Stats -->
+        <div class="card p-4 rounded-lg">
+            <h2 class="text-xs font-bold text-slate-500 uppercase mb-3 border-b border-slate-800 pb-2">📊 Performance</h2>
+            <div class="space-y-3">
+                <div class="flex justify-between"><span class="text-slate-400 text-xs">Win Rate</span><span class="font-bold text-emerald-400">60%</span></div>
+                <div class="w-full bg-slate-900/50 rounded h-2"><div class="bg-emerald-500 h-full" style="width: 60%"></div></div>
+                <div class="flex justify-between pt-2"><span class="text-slate-400 text-xs">Total Trades</span><span class="font-bold">25</span></div>
+                <div class="flex justify-between"><span class="text-slate-400 text-xs">Winning: 15</span><span class="text-emerald-400 text-xs">+$2,145</span></div>
+                <div class="flex justify-between"><span class="text-slate-400 text-xs">Losing: 10</span><span class="text-red-400 text-xs">-$825</span></div>
+                <div class="border-t border-slate-800 pt-3 mt-3">
+                    <div class="flex justify-between"><span class="text-slate-400 text-xs">Net Profit</span><span class="font-bold text-emerald-400">+$1,320</span></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+    const API_TOKEN = {{ token|tojson }};
+    const API_BASE = '/api';
+
+    const apiHeaders = { 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' };
+
+    function switchTab(tab) {
+        document.querySelectorAll('.content-tab').forEach(el => el.classList.add('hidden'));
+        document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
+        document.getElementById('content-' + tab).classList.remove('hidden');
+        document.getElementById('tab-' + tab).classList.add('active');
+
+        if (tab === 'scan') loadScanData();
+        else if (tab === 'premarket') loadPremarketData();
+        else if (tab === 'leaders') loadLeadersData();
+        else if (tab === 'after') loadAfterHoursData();
+        else if (tab === 'sectors') loadSectorsData();
+    }
+
+    async function loadScanData() {
+        try {
+            const res = await fetch(`${API_BASE}/scan`, { headers: apiHeaders });
+            const data = await res.json();
+            console.log('Scan data loaded:', data);
+        } catch (e) { console.error('Scan load error:', e); }
+    }
+
+    async function loadPremarketData() {
+        try {
+            const res = await fetch(`${API_BASE}/premarket`, { headers: apiHeaders });
+            const data = await res.json();
+            console.log('Pre-market data loaded:', data);
+        } catch (e) { console.error('Premarket load error:', e); }
+    }
+
+    async function loadLeadersData() {
+        try {
+            const res = await fetch(`${API_BASE}/leaders`, { headers: apiHeaders });
+            const data = await res.json();
+            console.log('Leaders data loaded:', data);
+        } catch (e) { console.error('Leaders load error:', e); }
+    }
+
+    async function loadAfterHoursData() {
+        try {
+            const res = await fetch(`${API_BASE}/after`, { headers: apiHeaders });
+            const data = await res.json();
+            console.log('After hours data loaded:', data);
+        } catch (e) { console.error('After hours load error:', e); }
+    }
+
+    async function loadSectorsData() {
+        try {
+            const res = await fetch(`${API_BASE}/sectors`, { headers: apiHeaders });
+            const data = await res.json();
+            console.log('Sectors data loaded:', data);
+        } catch (e) { console.error('Sectors load error:', e); }
+    }
+
+    function calculateExits() {
+        const entry = parseFloat(document.getElementById('t-price').value);
+        if (entry) {
+            const stop = entry * 0.985;
+            document.getElementById('t-stop').value = stop.toFixed(2);
+            document.getElementById('t-target').value = (entry + ((entry - stop) * 3)).toFixed(2);
+        }
+    }
+
+    async function logTrade() {
+        const trade = {
+            symbol: document.getElementById('t-symbol').value,
+            shares: parseFloat(document.getElementById('t-shares').value),
+            entry: parseFloat(document.getElementById('t-price').value),
+            stop: parseFloat(document.getElementById('t-stop').value),
+            target: parseFloat(document.getElementById('t-target').value),
+            thesis: document.getElementById('t-thesis').value
+        };
+
+        try {
+            const res = await fetch(`${API_BASE}/add-trade`, {
+                method: 'POST',
+                headers: apiHeaders,
+                body: JSON.stringify(trade)
+            });
+            const data = await res.json();
+            alert('✅ ' + data.message);
+            document.getElementById('trade-form').reset();
+        } catch (e) { alert('❌ Error: ' + e.message); }
+    }
+
+    async function displaySectorStocks() {
+        const sector = document.getElementById('sector-select').value;
+        const sectorNames = {tech: 'Technology', health: 'Healthcare', finance: 'Financials', energy: 'Energy', real: 'Real Estate'};
+        document.getElementById('sector-name').innerHTML = `🟢 Top Leading Stocks in ${sectorNames[sector]}`;
+
+        try {
+            const res = await fetch(`${API_BASE}/sector/${sector}`, { headers: apiHeaders });
+            const data = await res.json();
+            console.log('Sector stocks:', data);
+        } catch (e) { console.error('Error:', e); }
+    }
+
+    async function exportScanResults(type) {
+        try {
+            const res = await fetch(`${API_BASE}/scan`, { headers: apiHeaders });
+            const data = await res.json();
+            let csv = 'Symbol,Price,Change%,Volume\n';
+            const stocks = data[type] || [];
+            stocks.forEach(s => { csv += `${s.symbol},${s.price},${s.change},${s.volume}\n`; });
+            downloadFile(csv, `scan_${type}.csv`);
+        } catch (e) { alert('Error: ' + e.message); }
+    }
+
+    async function exportSectorStocks(format = 'csv') {
+        try {
+            const sector = document.getElementById('sector-select').value;
+            const res = await fetch(`${API_BASE}/sector/${sector}`, { headers: apiHeaders });
+            const data = await res.json();
+            let content = format === 'csv'
+                ? 'Symbol,Price,Tier,Change%\n' + data.stocks.map(s => `${s.symbol},${s.price},${s.tier},${s.change}`).join('\n')
+                : data.stocks.map(s => s.symbol).join(',');
+            downloadFile(content, `sector_stocks.${format}`);
+        } catch (e) { alert('Error: ' + e.message); }
+    }
+
+    async function downloadPortfolioCSV() {
+        try {
+            const res = await fetch(`${API_BASE}/export-portfolio?format=csv`, { headers: apiHeaders });
+            const data = await res.json();
+            downloadFile(data.data, 'portfolio.csv');
+        } catch (e) { alert('Error: ' + e.message); }
+    }
+
+    async function downloadPortfolioTXT() {
+        try {
+            const res = await fetch(`${API_BASE}/export-portfolio?format=txt`, { headers: apiHeaders });
+            const data = await res.json();
+            downloadFile(data.data, 'portfolio.txt');
+        } catch (e) { alert('Error: ' + e.message); }
+    }
+
+    async function downloadWatchlistCSV() {
+        try {
+            const res = await fetch(`${API_BASE}/export-watchlist?format=csv`, { headers: apiHeaders });
+            const data = await res.json();
+            downloadFile(data.data, 'watchlist.csv');
+        } catch (e) { alert('Error: ' + e.message); }
+    }
+
+    async function downloadWatchlistTXT() {
+        try {
+            const res = await fetch(`${API_BASE}/export-watchlist?format=txt`, { headers: apiHeaders });
+            const data = await res.json();
+            downloadFile(data.data, 'watchlist.txt');
+        } catch (e) { alert('Error: ' + e.message); }
+    }
+
+    async function uploadPortfolioFile(input) {
+        if (!input.files[0]) return;
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const res = await fetch(`${API_BASE}/import-portfolio`, {
+                    method: 'POST',
+                    headers: apiHeaders,
+                    body: JSON.stringify({ content: e.target.result })
+                });
+                const data = await res.json();
+                alert('✅ ' + data.message);
+            } catch (err) { alert('❌ Error: ' + err.message); }
+        };
+        reader.readAsText(input.files[0]);
+    }
+
+    async function uploadWatchlistFile(input) {
+        if (!input.files[0]) return;
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const res = await fetch(`${API_BASE}/import-watchlist`, {
+                    method: 'POST',
+                    headers: apiHeaders,
+                    body: JSON.stringify({ content: e.target.result })
+                });
+                const data = await res.json();
+                alert('✅ ' + data.message);
+            } catch (err) { alert('❌ Error: ' + err.message); }
+        };
+        reader.readAsText(input.files[0]);
+    }
+
+    function downloadFile(content, filename) {
+        const blob = new Blob([content], {type: 'text/plain'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+    }
+
+    async function syncData() {
+        try {
+            await Promise.all([
+                fetch(`${API_BASE}/portfolio`, { headers: apiHeaders }),
+                fetch(`${API_BASE}/watchlist`, { headers: apiHeaders }),
+                fetch(`${API_BASE}/trades`, { headers: apiHeaders })
+            ]);
+            location.reload();
+        } catch (e) { alert('Error syncing: ' + e.message); }
+    }
+
+    function showWatchlistModal() {
+        const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
+        document.getElementById('briefDate').textContent = today;
+        const modal = document.getElementById('watchlistModal');
+        modal.classList.remove('hidden');
+    }
+
+    function closeWatchlistModal() {
+        const modal = document.getElementById('watchlistModal');
+        modal.classList.add('hidden');
+    }
+
+    window.onload = () => {
+        document.getElementById('t-date').valueAsDate = new Date();
+
+        // Initialize charts
+        if (document.getElementById('equityCurveChart')) {
+            const ctx1 = document.getElementById('equityCurveChart').getContext('2d');
+            new Chart(ctx1, {
+                type: 'line',
+                data: {
+                    labels: ['Mar 1', 'Mar 5', 'Mar 10', 'Mar 15', 'Mar 20', 'Mar 25'],
+                    datasets: [{
+                        label: 'Equity Curve',
+                        data: [10000, 10450, 10320, 10850, 10650, 10200],
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        tension: 0.3,
+                        fill: true,
+                        pointRadius: 4,
+                        pointBackgroundColor: '#3b82f6'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+                        x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }
+                    }
+                }
+            });
+        }
+
+        if (document.getElementById('performanceChart')) {
+            const ctx2 = document.getElementById('performanceChart').getContext('2d');
+            new Chart(ctx2, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Wins', 'Losses'],
+                    datasets: [{
+                        data: [60, 40],
+                        backgroundColor: ['#10b981', '#ef4444'],
+                        borderColor: '#0f172a',
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#94a3b8' } } }
+                }
+            });
+        }
+
+        if (!API_TOKEN) {
+            window.location = '/dashboard';
+        } else {
+            showWatchlistModal();
+            console.log('✅ Dashboard loaded with API token');
+        }
+    };
+</script>
+
+</body>
+</html>

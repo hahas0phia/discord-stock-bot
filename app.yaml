@@ -4,8 +4,8 @@ runtime: python
 env: flex
 service: discord-bot
 
-# Main entry point - runs the Flask health check + Discord bot
-entrypoint: gunicorn -w 1 -b 0.0.0.0:8080 --timeout 300 --access-logfile - --error-logfile - wsgi:app
+# Main entry point - runs the Flask app + Discord bot
+entrypoint: sh -c 'gunicorn -w 1 -b 0.0.0.0:${PORT:-8080} --timeout 300 --access-logfile - --error-logfile - wsgi:app'
 
 # Environment variables are set via Oracle Cloud Console or in .env
 # See .env.example for required variables

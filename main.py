@@ -12,8 +12,9 @@ import asyncio
 import io
 import json
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from sqlalchemy import create_engine, pool
 from sqlalchemy.orm import sessionmaker
 import psycopg2
@@ -25,6 +26,15 @@ from functools import wraps
 # ─── Environment & Load Config ────────────────────────────────────────────────────
 
 load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATES_DIR = BASE_DIR / "templates"
+DASHBOARD_HTML_CANDIDATES = (
+    TEMPLATES_DIR / "dashboard.html",
+    BASE_DIR / "dashboard.html",
+)
+DATA_DIR = Path(os.getenv("BOT_DATA_DIR", str(BASE_DIR / "data"))).resolve()
+SQLITE_DB_PATH = Path(os.getenv("SQLITE_DB_PATH", str(DATA_DIR / "bot.db"))).resolve()
 
 # ─── Web Token Configuration (before Flask) ───────────────────────────────────────
 
@@ -79,7 +89,8 @@ def _verify_web_token(token: str) -> tuple:
 
 # ─── Flask Keep-Alive (24/7) ──────────────────────────────────────────────────
 
-_flask_app = Flask(__name__)
+_flask_app = Flask(__name__, template_folder=str(TEMPLATES_DIR))
+app = _flask_app
 
 def _require_web_token(f):
     """Decorator to verify web token in requests."""
@@ -105,9 +116,9 @@ def _home():
 def _health():
     """Health check endpoint for Oracle Cloud load balancer."""
     try:
-        # Quick database connection test
-        with _db_session() as session:
-            session.execute("SELECT 1")
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, "cursor") else conn
+            cursor.execute("SELECT 1")
         return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}, 200
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}, 503
@@ -119,11 +130,14 @@ def _health():
 def api_portfolio(user_id: int):
     """Fetch user's portfolio data."""
     try:
-        with _db_session() as session:
-            portfolio = session.execute(
-                f"SELECT ticker, shares, entry_price, added_at FROM portfolio WHERE user_id = ? ORDER BY ticker",
-                (user_id,)
-            ).fetchall() if hasattr(session, 'execute') else []
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, "cursor") else conn
+            portfolio = list(
+                cursor.execute(
+                    "SELECT ticker, shares, entry_price, added_at FROM portfolio WHERE user_id = ? ORDER BY ticker",
+                    (user_id,),
+                ).fetchall()
+            )
 
         # Get live prices if possible (simple version - can be expanded)
         portfolio_data = []
@@ -401,8 +415,9 @@ def api_add_watchlist(user_id: int):
         with _db() as conn:
             cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
             cursor.execute(
-                """INSERT OR IGNORE INTO user_watchlists (user_id, ticker, added_at)
-                   VALUES (?, ?, ?)""",
+                """INSERT INTO user_watchlists (user_id, ticker, added_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(user_id, ticker) DO NOTHING""",
                 (user_id, data.get('ticker'), datetime.utcnow().isoformat())
             )
             conn.commit()
@@ -498,8 +513,9 @@ def api_import_portfolio(user_id: int):
                     if len(parts) >= 3:
                         ticker, shares, entry = parts[0], float(parts[1]), float(parts[2])
                         cursor.execute(
-                            """INSERT OR IGNORE INTO portfolio (user_id, ticker, shares, entry_price, added_at)
-                               VALUES (?, ?, ?, ?, ?)""",
+                            """INSERT INTO portfolio (user_id, ticker, shares, entry_price, added_at)
+                               VALUES (?, ?, ?, ?, ?)
+                               ON CONFLICT(user_id, ticker) DO NOTHING""",
                             (user_id, ticker, shares, entry, datetime.utcnow().isoformat())
                         )
             conn.commit()
@@ -529,8 +545,9 @@ def api_import_watchlist(user_id: int):
             cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
             for ticker in tickers:
                 cursor.execute(
-                    """INSERT OR IGNORE INTO user_watchlists (user_id, ticker, added_at)
-                       VALUES (?, ?, ?)""",
+                    """INSERT INTO user_watchlists (user_id, ticker, added_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(user_id, ticker) DO NOTHING""",
                     (user_id, ticker.strip(), datetime.utcnow().isoformat())
                 )
             conn.commit()
@@ -542,14 +559,15 @@ def api_import_watchlist(user_id: int):
 @_flask_app.route("/dashboard", methods=["GET"])
 def dashboard():
     """Serve the web dashboard HTML."""
-    token = request.args.get("token")
-    if token:
-        is_valid, user_id = _verify_web_token(token)
-        if is_valid:
-            return _get_dashboard_html(token)
+    token_str = request.args.get("token")
+    if not token_str:
+        return "No token provided", 401
 
-    # Return login page
-    return _get_login_html()
+    is_valid, _user_id = _verify_web_token(token_str)
+    if not is_valid:
+        return "Invalid or expired token", 403
+
+    return render_template("dashboard.html", token=token_str)
 
 def _get_login_html():
     """Return HTML for token entry page."""
@@ -593,13 +611,13 @@ def _get_login_html():
 def _get_dashboard_html(token):
     """Return the main dashboard HTML with embedded token."""
     try:
-        # Try to read dashboard.html from disk
-        dashboard_path = os.path.join(os.path.dirname(__file__), 'dashboard.html')
-        if os.path.exists(dashboard_path):
-            with open(dashboard_path, 'r') as f:
-                html = f.read()
-        else:
-            # Fallback if file doesn't exist
+        html = None
+        for dashboard_path in DASHBOARD_HTML_CANDIDATES:
+            if dashboard_path.exists():
+                html = dashboard_path.read_text(encoding="utf-8")
+                break
+
+        if html is None:
             html = _get_default_dashboard_html()
 
         # Inject token into the HTML
@@ -637,25 +655,63 @@ def _get_default_dashboard_html():
     </script>
 </body>
 </html>"""
+_flask_thread = None
+_discord_thread = None
 
-
-
+def _run_flask():
+    """Run the embedded Flask server for standalone bot deployments."""
     port = int(os.environ.get("PORT", 8080))
     _flask_app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
 
-threading.Thread(target=_run_flask, daemon=True).start()
+def start_web_server():
+    """Start the embedded Flask server once when main.py is the service entrypoint."""
+    global _flask_thread
+    if _flask_thread and _flask_thread.is_alive():
+        return _flask_thread
+
+    _flask_thread = threading.Thread(
+        target=_run_flask,
+        name="embedded-flask-server",
+        daemon=True,
+    )
+    _flask_thread.start()
+    return _flask_thread
+
+def _run_discord_bot():
+    """Run the Discord bot using the configured token."""
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise RuntimeError("DISCORD_TOKEN environment variable is not set.")
+    bot.run(token)
+
+def start_discord_bot(background=False):
+    """Start the Discord bot once, optionally in a background thread for WSGI."""
+    global _discord_thread
+
+    if background:
+        if _discord_thread and _discord_thread.is_alive():
+            return _discord_thread
+
+        _discord_thread = threading.Thread(
+            target=_run_discord_bot,
+            name="discord-bot",
+            daemon=True,
+        )
+        _discord_thread.start()
+        return _discord_thread
+
+    _run_discord_bot()
+    return None
 
 # ─── Database Configuration (PostgreSQL via SQLAlchemy) ──────────────────────
 
-# Try to use DATABASE_URL first (Oracle Cloud), fallback to SQLite for local dev
-DATABASE_URL = "sqlite:////home/ubuntu/discord-stock-bot/data/bot.db"
-
-os.environ.get(
-    "DATABASE_URL", "sqlite:////tmp/alerts.db"  # Local fallback for development
-)
+# Try to use DATABASE_URL first (Oracle Cloud), fallback to a local SQLite database.
+SQLITE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{SQLITE_DB_PATH.as_posix()}")
+IS_POSTGRES = DATABASE_URL.lower().startswith(("postgresql", "postgres"))
 
 # Create engine with connection pooling
-if "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL:
+if IS_POSTGRES:
     # Production: PostgreSQL on Oracle Cloud
     engine = create_engine(
         DATABASE_URL,
@@ -689,16 +745,71 @@ def _db_session():
     finally:
         session.close()
 
+class _CompatCursor:
+    """Allow sqlite-style '?' placeholders to work against psycopg2."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def execute(self, query, params=None):
+        normalized = query.replace("?", "%s")
+        if params is None:
+            self._cursor.execute(normalized)
+        else:
+            self._cursor.execute(normalized, params)
+        return self
+
+    def executemany(self, query, param_sets):
+        self._cursor.executemany(query.replace("?", "%s"), param_sets)
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def close(self):
+        self._cursor.close()
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+class _CompatConnection:
+    """Compatibility wrapper so existing sqlite-style code works with psycopg2."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def cursor(self):
+        return _CompatCursor(self._connection.cursor())
+
+    def execute(self, query, params=None):
+        return self.cursor().execute(query, params)
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
 # For backward compatibility, keep a raw connection context manager
 @contextmanager
 def _db():
     """Raw database connection context manager."""
-    if "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL:
-        # PostgreSQL connection
-        conn = psycopg2.connect(DATABASE_URL)
+    if IS_POSTGRES:
+        conn = _CompatConnection(psycopg2.connect(DATABASE_URL))
     else:
-        # SQLite connection
-        conn = sqlite3.connect("/home/ubuntu/discord-stock-bot/data/bot.db")
+        conn = sqlite3.connect(SQLITE_DB_PATH)
         conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -715,7 +826,7 @@ def init_db():
         cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
         
         # Detect database type
-        is_postgres = "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL
+        is_postgres = IS_POSTGRES
         
         # Create tables with SQL that works for both databases
         try:
@@ -881,7 +992,9 @@ def init_db():
         
         conn.commit()
 
-print(f"[DB] Using database: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'SQLite (local dev)'}")
+print(
+    f"[DB] Using database: {DATABASE_URL.split('@', 1)[1] if IS_POSTGRES and '@' in DATABASE_URL else f'SQLite ({SQLITE_DB_PATH})'}"
+)
 
 # ─── Web Token Management ──────────────────────────────────────────────────────
 
@@ -5068,7 +5181,5 @@ bot.tree.add_command(web_group)
 
 if __name__ == "__main__":
     load_dotenv()
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        raise RuntimeError("DISCORD_TOKEN environment variable is not set.")
-    bot.run(token)
+    start_web_server()
+    start_discord_bot()
