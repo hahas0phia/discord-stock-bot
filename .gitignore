@@ -1,3 +1,88 @@
+# Environment variables
 .env
-bot.db
+.env.local
+.env.*.local
+
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+/tmp/alerts.db
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups
+*.bak
+*.backup
+*.orig
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# Oracle Cloud
+*.oci
+oracle-secrets.json
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE specific
+*.sublime-project
+*.sublime-workspace
+
+# Migration backups
+*.sql.backup

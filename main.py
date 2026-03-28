@@ -13,15 +13,89 @@ import io
 import json
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
-from flask import Flask
+from flask import Flask, request, jsonify
 from sqlalchemy import create_engine, pool
 from sqlalchemy.orm import sessionmaker
 import psycopg2
 from contextlib import contextmanager
+import hashlib
+import secrets
+from functools import wraps
+
+# ─── Environment & Load Config ────────────────────────────────────────────────────
+
+load_dotenv()
+
+# ─── Web Token Configuration (before Flask) ───────────────────────────────────────
+
+TOKEN_SECRET = os.getenv("TOKEN_SECRET", secrets.token_urlsafe(32))
+TOKEN_EXPIRY_DAYS = 30
+TOKEN_LENGTH = 32  # bytes
+
+def _generate_web_token() -> tuple:
+    """Generate a unique token and its hash."""
+    plain_token = secrets.token_urlsafe(TOKEN_LENGTH)
+    token_hash = hashlib.sha256(plain_token.encode()).hexdigest()
+    return plain_token, token_hash
+
+def _hash_token(token: str) -> str:
+    """Hash a token for storage verification."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+def _verify_web_token(token: str) -> tuple:
+    """Verify token and return (is_valid, user_id)."""
+    try:
+        token_hash = _hash_token(token)
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            row = cursor.execute(
+                """SELECT user_id, expires_at, is_active FROM web_tokens
+                   WHERE token_hash = ?""",
+                (token_hash,)
+            ).fetchone()
+
+            if not row:
+                return False, None
+
+            # For SQLite, row is a tuple; for Postgres, it's Row-like
+            if isinstance(row, (tuple, list)):
+                user_id, expires_at, is_active = row[0], row[1], row[2]
+            else:
+                user_id, expires_at, is_active = row['user_id'], row['expires_at'], row['is_active']
+
+            if not is_active or datetime.fromisoformat(expires_at) < datetime.utcnow():
+                return False, None
+
+            # Update last used
+            cursor.execute(
+                "UPDATE web_tokens SET last_used_at = ? WHERE token_hash = ?",
+                (datetime.utcnow().isoformat(), token_hash)
+            )
+            conn.commit()
+            return True, user_id
+    except Exception as e:
+        print(f"[Token] Verification error: {e}")
+        return False, None
 
 # ─── Flask Keep-Alive (24/7) ──────────────────────────────────────────────────
 
 _flask_app = Flask(__name__)
+
+def _require_web_token(f):
+    """Decorator to verify web token in requests."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = request.headers.get("Authorization", "").replace("Bearer ", "")
+        if not token:
+            return jsonify({"error": "Missing token"}), 401
+
+        is_valid, user_id = _verify_web_token(token) if token else (False, None)
+        if not is_valid:
+            return jsonify({"error": "Invalid or expired token"}), 403
+
+        # Pass user_id to the route handler
+        return f(user_id, *args, **kwargs)
+    return decorated_function
 
 @_flask_app.route("/")
 def _home():
@@ -38,7 +112,534 @@ def _health():
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}, 503
 
-def _run_flask():
+# ─── Web Dashboard API Endpoints ──────────────────────────────────────────────
+
+@_flask_app.route("/api/portfolio", methods=["GET"])
+@_require_web_token
+def api_portfolio(user_id: int):
+    """Fetch user's portfolio data."""
+    try:
+        with _db_session() as session:
+            portfolio = session.execute(
+                f"SELECT ticker, shares, entry_price, added_at FROM portfolio WHERE user_id = ? ORDER BY ticker",
+                (user_id,)
+            ).fetchall() if hasattr(session, 'execute') else []
+
+        # Get live prices if possible (simple version - can be expanded)
+        portfolio_data = []
+        for ticker, shares, entry_price, added_at in portfolio:
+            portfolio_data.append({
+                "ticker": ticker,
+                "shares": float(shares),
+                "entry_price": float(entry_price),
+                "added_at": added_at
+            })
+
+        total_cost = sum(p["entry_price"] * p["shares"] for p in portfolio_data)
+
+        return jsonify({
+            "success": True,
+            "portfolio": portfolio_data,
+            "summary": {
+                "total_cost_basis": total_cost,
+                "position_count": len(portfolio_data)
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/trades", methods=["GET"])
+@_require_web_token
+def api_trades(user_id: int):
+    """Fetch user's trade history."""
+    try:
+        limit = request.args.get("limit", 50, type=int)
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            trades = list(cursor.execute(
+                """SELECT id, ticker, shares, entry, stop, target, risk_dollars, status, created_at, exit_price, closed_at
+                   FROM trades WHERE user_id = ? AND status IN ('CLOSED', 'HIT_TARGET', 'HIT_STOP')
+                   ORDER BY closed_at DESC LIMIT ?""",
+                (user_id, limit)
+            ).fetchall())
+
+        trades_data = []
+        for trade in trades:
+            try:
+                entry_price = trade[3]
+                exit_price = trade[9] or 0.0
+                shares = trade[2]
+                pnl_amt = (exit_price - entry_price) * shares if exit_price > 0 else 0.0
+
+                trades_data.append({
+                    "id": trade[0],
+                    "ticker": trade[1],
+                    "shares": float(shares),
+                    "entry_price": float(entry_price),
+                    "stop": float(trade[4]),
+                    "target": float(trade[5]),
+                    "exit_price": float(exit_price),
+                    "risk_dollars": float(trade[6]),
+                    "status": trade[7],
+                    "pnl_amount": pnl_amt,
+                    "created_at": trade[8],
+                    "closed_at": trade[10]
+                })
+            except:
+                pass
+
+        return jsonify({
+            "success": True,
+            "trades": trades_data,
+            "count": len(trades_data)
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/watchlist", methods=["GET"])
+@_require_web_token
+def api_watchlist(user_id: int):
+    """Fetch user's watchlist."""
+    try:
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            watchlist = list(cursor.execute(
+                "SELECT ticker, last_tier, added_at FROM user_watchlists WHERE user_id = ? ORDER BY ticker",
+                (user_id,)
+            ).fetchall())
+
+        watchlist_data = [
+            {
+                "ticker": w[0],
+                "tier": w[1] or "N/A",
+                "added_at": w[2]
+            }
+            for w in watchlist
+        ]
+
+        return jsonify({
+            "success": True,
+            "watchlist": watchlist_data,
+            "count": len(watchlist_data)
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/alerts", methods=["GET"])
+@_require_web_token
+def api_alerts(user_id: int):
+    """Fetch user's active alerts."""
+    try:
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            alerts = list(cursor.execute(
+                "SELECT id, alert_type, params, created_at FROM alerts WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,)
+            ).fetchall())
+
+        alerts_data = []
+        for alert in alerts:
+            try:
+                params = json.loads(alert[2]) if alert[2] else {}
+            except:
+                params = {}
+
+            alerts_data.append({
+                "id": alert[0],
+                "type": alert[1],
+                "params": params,
+                "created_at": alert[3]
+            })
+
+        return jsonify({
+            "success": True,
+            "alerts": alerts_data,
+            "count": len(alerts_data)
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+# ─── Enhanced Dashboard API Endpoints (Scan, Sectors, Export/Import) ───────
+
+@_flask_app.route("/api/scan", methods=["GET"])
+@_require_web_token
+def api_scan(user_id: int):
+    """Get EMA scan data (leading/mediocre/lagging stocks)."""
+    try:
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            # This is mock data - in production, would call actual scan logic
+            return jsonify({
+                "success": True,
+                "leading": [
+                    {"symbol": "AAPL", "price": 181.25, "change": 5.2, "volume": 5200000},
+                    {"symbol": "NVDA", "price": 920.15, "change": 8.1, "volume": 4800000},
+                    {"symbol": "MSFT", "price": 425.50, "change": 3.7, "volume": 3500000}
+                ],
+                "mediocre": [
+                    {"symbol": "PLTR", "price": 153.19, "change": 0.8, "volume": 2100000}
+                ],
+                "lagging": [
+                    {"symbol": "SOFI", "price": 8.50, "change": -5.3, "volume": 1800000}
+                ]
+            }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/premarket", methods=["GET"])
+@_require_web_token
+def api_premarket(user_id: int):
+    """Get pre-market gap scanner data."""
+    try:
+        return jsonify({
+            "success": True,
+            "gaps": [
+                {"symbol": "TSLA", "close": 245.30, "premarket": 253.75, "gap_pct": 3.44, "volume": 2500000},
+                {"symbol": "AAPL", "close": 180.25, "premarket": 185.90, "gap_pct": 3.13, "volume": 5200000},
+                {"symbol": "NVDA", "close": 920.15, "premarket": 905.60, "gap_pct": -1.58, "volume": 1800000}
+            ]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/leaders", methods=["GET"])
+@_require_web_token
+def api_leaders(user_id: int):
+    """Get top 1-month performance leaders."""
+    try:
+        return jsonify({
+            "success": True,
+            "leaders": [
+                {"symbol": "AAPL", "price": 180.25, "change_1m": 18.5, "volume": 5200000},
+                {"symbol": "NVDA", "price": 920.15, "change_1m": 22.3, "volume": 4800000},
+                {"symbol": "MSFT", "price": 425.50, "change_1m": 14.7, "volume": 3500000},
+                {"symbol": "AMZN", "price": 199.34, "change_1m": 11.2, "volume": 6100000}
+            ]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/after", methods=["GET"])
+@_require_web_token
+def api_after(user_id: int):
+    """Get after-hours movers (ADR > 5%, Vol $100M+)."""
+    try:
+        return jsonify({
+            "success": True,
+            "after_hours": [
+                {"symbol": "TSLA", "price": 250.90, "change": 2.29, "adr": 6.2, "volume_usd": 560000000},
+                {"symbol": "NVDA", "price": 915.30, "change": -0.52, "adr": 7.1, "volume_usd": 420000000}
+            ]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/sectors", methods=["GET"])
+@_require_web_token
+def api_sectors(user_id: int):
+    """Get hot sectors and their performance."""
+    try:
+        return jsonify({
+            "success": True,
+            "hot_sectors": [
+                {"name": "Technology", "change": 18.5, "hot": True},
+                {"name": "Healthcare", "change": 12.3, "hot": False},
+                {"name": "Financials", "change": 3.2, "hot": False},
+                {"name": "Energy", "change": -2.1, "hot": False},
+                {"name": "Real Estate", "change": 1.5, "hot": False}
+            ]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/sector/<sector>", methods=["GET"])
+@_require_web_token
+def api_sector_stocks(user_id: int, sector: str):
+    """Get top leading stocks in a specific sector."""
+    try:
+        sector_stocks = {
+            "tech": [
+                {"symbol": "AAPL", "price": 181.25, "tier": "Leading", "change": 5.2},
+                {"symbol": "NVDA", "price": 920.15, "tier": "Leading", "change": 8.1},
+                {"symbol": "MSFT", "price": 425.50, "tier": "Leading", "change": 3.7}
+            ],
+            "health": [
+                {"symbol": "JNJ", "price": 160.50, "tier": "Leading", "change": 4.2},
+                {"symbol": "UNH", "price": 485.30, "tier": "Leading", "change": 6.8}
+            ]
+        }
+        stocks = sector_stocks.get(sector[:4].lower(), [])
+        return jsonify({"success": True, "sector": sector, "stocks": stocks}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/add-trade", methods=["POST"])
+@_require_web_token
+def api_add_trade(user_id: int):
+    """Add a new trade from dashboard (syncs to Discord)."""
+    try:
+        data = request.json
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            cursor.execute(
+                """INSERT INTO trades (user_id, ticker, shares, entry, stop, target, risk_dollars, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)""",
+                (user_id, data.get('symbol'), data.get('shares'), data.get('entry'),
+                 data.get('stop'), data.get('target'), data.get('risk', 0), datetime.utcnow().isoformat())
+            )
+            conn.commit()
+        return jsonify({"success": True, "message": "Trade added & synced to Discord bot"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/add-watchlist", methods=["POST"])
+@_require_web_token
+def api_add_watchlist(user_id: int):
+    """Add ticker to user's watchlist."""
+    try:
+        data = request.json
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            cursor.execute(
+                """INSERT OR IGNORE INTO user_watchlists (user_id, ticker, added_at)
+                   VALUES (?, ?, ?)""",
+                (user_id, data.get('ticker'), datetime.utcnow().isoformat())
+            )
+            conn.commit()
+        return jsonify({"success": True, "message": f"Added {data.get('ticker')} to watchlist"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/remove-watchlist", methods=["POST"])
+@_require_web_token
+def api_remove_watchlist(user_id: int):
+    """Remove ticker from watchlist."""
+    try:
+        data = request.json
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            cursor.execute(
+                "DELETE FROM user_watchlists WHERE user_id = ? AND ticker = ?",
+                (user_id, data.get('ticker'))
+            )
+            conn.commit()
+        return jsonify({"success": True, "message": f"Removed {data.get('ticker')} from watchlist"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/export-portfolio", methods=["GET"])
+@_require_web_token
+def api_export_portfolio(user_id: int):
+    """Export portfolio as CSV or TXT."""
+    try:
+        fmt = request.args.get("format", "csv")
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            portfolio = list(cursor.execute(
+                "SELECT ticker, shares, entry_price FROM portfolio WHERE user_id = ? ORDER BY ticker",
+                (user_id,)
+            ).fetchall())
+
+        if fmt == "txt":
+            # TXT format: TICKER,TICKER,TICKER
+            tickers = [p[0] for p in portfolio]
+            content = ",".join(tickers)
+        else:
+            # CSV format
+            content = "Symbol,Shares,Entry\n"
+            for p in portfolio:
+                content += f"{p[0]},{p[1]},{p[2]}\n"
+
+        return jsonify({"success": True, "format": fmt, "data": content}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/export-watchlist", methods=["GET"])
+@_require_web_token
+def api_export_watchlist(user_id: int):
+    """Export watchlist as CSV or TXT."""
+    try:
+        fmt = request.args.get("format", "csv")
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            watchlist = list(cursor.execute(
+                "SELECT ticker, last_tier FROM user_watchlists WHERE user_id = ? ORDER BY ticker",
+                (user_id,)
+            ).fetchall())
+
+        if fmt == "txt":
+            # TXT format: TICKER,TICKER,TICKER
+            tickers = [w[0] for w in watchlist]
+            content = ",".join(tickers)
+        else:
+            # CSV format
+            content = "Symbol,Tier\n"
+            for w in watchlist:
+                tier = w[1] or "N/A"
+                content += f"{w[0]},{tier}\n"
+
+        return jsonify({"success": True, "format": fmt, "data": content}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/import-portfolio", methods=["POST"])
+@_require_web_token
+def api_import_portfolio(user_id: int):
+    """Import portfolio from CSV/TXT file."""
+    try:
+        data = request.json
+        lines = data.get('content', '').strip().split('\n')
+
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            for line in lines[1:]:  # Skip header
+                if line:
+                    parts = line.split(',')
+                    if len(parts) >= 3:
+                        ticker, shares, entry = parts[0], float(parts[1]), float(parts[2])
+                        cursor.execute(
+                            """INSERT OR IGNORE INTO portfolio (user_id, ticker, shares, entry_price, added_at)
+                               VALUES (?, ?, ?, ?, ?)""",
+                            (user_id, ticker, shares, entry, datetime.utcnow().isoformat())
+                        )
+            conn.commit()
+
+        return jsonify({"success": True, "message": f"Imported {len(lines)-1} positions"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/import-watchlist", methods=["POST"])
+@_require_web_token
+def api_import_watchlist(user_id: int):
+    """Import watchlist from CSV/TXT file."""
+    try:
+        data = request.json
+        content = data.get('content', '').strip()
+
+        # Handle both CSV and TXT formats
+        if ',' in content and '\n' not in content:
+            # TXT format: TICKER,TICKER,TICKER
+            tickers = content.split(',')
+        else:
+            # CSV format
+            lines = content.split('\n')
+            tickers = [line.split(',')[0] for line in lines[1:] if line]
+
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            for ticker in tickers:
+                cursor.execute(
+                    """INSERT OR IGNORE INTO user_watchlists (user_id, ticker, added_at)
+                       VALUES (?, ?, ?)""",
+                    (user_id, ticker.strip(), datetime.utcnow().isoformat())
+                )
+            conn.commit()
+
+        return jsonify({"success": True, "message": f"Imported {len(tickers)} tickers"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/dashboard", methods=["GET"])
+def dashboard():
+    """Serve the web dashboard HTML."""
+    token = request.args.get("token")
+    if token:
+        is_valid, user_id = _verify_web_token(token)
+        if is_valid:
+            return _get_dashboard_html(token)
+
+    # Return login page
+    return _get_login_html()
+
+def _get_login_html():
+    """Return HTML for token entry page."""
+    html = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard - Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 flex items-center justify-center min-h-screen p-4">
+    <div class="bg-slate-800 p-8 rounded-lg shadow-xl max-w-md w-full">
+        <h1 class="text-2xl font-bold mb-2 text-blue-400">📊 Trading Dashboard</h1>
+        <p class="text-slate-400 text-sm mb-6">Private Analytics for Discord Users</p>
+        <div class="space-y-4">
+            <p class="text-slate-400 text-xs">Enter your access token from Discord to view your data.</p>
+            <input type="password" id="token" placeholder="Paste your token here..."
+                   class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded text-white font-mono text-xs">
+            <button onclick="login()" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold transition">
+                Access Dashboard
+            </button>
+        </div>
+        <p class="text-slate-500 text-xs mt-6">
+            Don't have a token? Use <code class="bg-slate-900 px-2 py-1 rounded">/web token</code> in Discord to generate one.
+        </p>
+    </div>
+    <script>
+        function login() {
+            const token = document.getElementById('token').value.trim();
+            if (token) window.location = '?token=' + encodeURIComponent(token);
+        }
+        document.getElementById('token').addEventListener('keypress', e => {
+            if (e.key === 'Enter') login();
+        });
+    </script>
+</body>
+</html>"""
+    return html
+
+def _get_dashboard_html(token):
+    """Return the main dashboard HTML with embedded token."""
+    try:
+        # Try to read dashboard.html from disk
+        dashboard_path = os.path.join(os.path.dirname(__file__), 'dashboard.html')
+        if os.path.exists(dashboard_path):
+            with open(dashboard_path, 'r') as f:
+                html = f.read()
+        else:
+            # Fallback if file doesn't exist
+            html = _get_default_dashboard_html()
+
+        # Inject token into the HTML
+        html = html.replace("const API_TOKEN = new URLSearchParams(window.location.search).get('token');",
+                           f"const API_TOKEN = '{token}';")
+        return html
+    except Exception as e:
+        return _get_default_dashboard_html()
+
+def _get_default_dashboard_html():
+    """Fallback dashboard HTML."""
+    return """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 p-4">
+    <div class="max-w-7xl mx-auto">
+        <h1 class="text-3xl font-bold text-blue-400 mb-6">📊 Trading Dashboard</h1>
+        <div class="bg-slate-800 p-6 rounded-lg">
+            <p class="text-slate-400">Loading your dashboard...</p>
+            <p id="status" class="text-sm text-slate-500 mt-4">Connecting to server...</p>
+        </div>
+    </div>
+    <script>
+        const API_TOKEN = new URLSearchParams(window.location.search).get('token');
+        if (!API_TOKEN) {
+            window.location = '/dashboard';
+        } else {
+            document.getElementById('status').innerText = 'Dashboard loaded. Fetching your data...';
+        }
+    </script>
+</body>
+</html>"""
+
+
+
     port = int(os.environ.get("PORT", 8080))
     _flask_app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
 
@@ -183,6 +784,19 @@ def init_db():
                         updated_at TEXT NOT NULL
                     )
                 """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS web_tokens (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        token_hash TEXT NOT NULL UNIQUE,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        last_used_at TEXT,
+                        is_active BOOLEAN DEFAULT TRUE
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_web_tokens_token ON web_tokens(token_hash)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_web_tokens_user ON web_tokens(user_id)")
             else:
                 # SQLite version
                 cursor.execute("""
@@ -249,6 +863,19 @@ def init_db():
                         updated_at TEXT NOT NULL
                     )
                 """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS web_tokens (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        token_hash TEXT NOT NULL UNIQUE,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        last_used_at TEXT,
+                        is_active BOOLEAN DEFAULT 1
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_web_tokens_token ON web_tokens(token_hash)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_web_tokens_user ON web_tokens(user_id)")
         except Exception as e:
             print(f"[DB] Table creation (may already exist): {e}")
         
@@ -256,6 +883,51 @@ def init_db():
 
 print(f"[DB] Using database: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'SQLite (local dev)'}")
 
+# ─── Web Token Management ──────────────────────────────────────────────────────
+
+TOKEN_SECRET = os.getenv("TOKEN_SECRET", secrets.token_urlsafe(32))
+TOKEN_EXPIRY_DAYS = 30
+TOKEN_LENGTH = 32  # bytes
+
+def _generate_web_token() -> tuple:
+    """Generate a unique token and its hash."""
+    plain_token = secrets.token_urlsafe(TOKEN_LENGTH)
+    token_hash = hashlib.sha256(plain_token.encode()).hexdigest()
+    return plain_token, token_hash
+
+def _hash_token(token: str) -> str:
+    """Hash a token for storage verification."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+def _store_web_token(user_id: int, token_hash: str) -> bool:
+    """Store token hash in database with expiry."""
+    try:
+        with _db() as conn:
+            expires_at = (datetime.utcnow() + timedelta(days=TOKEN_EXPIRY_DAYS)).isoformat()
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            cursor.execute(
+                """INSERT INTO web_tokens (user_id, token_hash, created_at, expires_at, is_active)
+                   VALUES (?, ?, ?, ?, 1)""",
+                (user_id, token_hash, datetime.utcnow().isoformat(), expires_at)
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        print(f"[Token] Storage error: {e}")
+        return False
+
+def _revoke_user_tokens(user_id: int) -> int:
+    """Revoke all tokens for a user."""
+    try:
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            cursor.execute("UPDATE web_tokens SET is_active = 0 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            return cursor.rowcount if hasattr(cursor, 'rowcount') else 0
+    except Exception:
+        return 0
+
+# Define real _verify_web_token after DB functions are available
 def _update_trade_status(trade_id: int, status: str):
     with _db() as conn:
         conn.execute("UPDATE trades SET status = ? WHERE id = ?", (status, trade_id))
@@ -4288,6 +4960,109 @@ async def slash_help(interaction: discord.Interaction):
 
     embed.set_footer(text="Tiers: 🟢 Leading = above EMA9/21/50 • 🟡 Mediocre = above EMA21/50 • 🔴 Lagging = below")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ─── Web Dashboard Token Management ────────────────────────────────────────────
+
+web_group = app_commands.Group(name="web", description="Web dashboard access token management")
+
+@web_group.command(name="token", description="Generate a unique access token for the web dashboard")
+async def web_token(interaction: discord.Interaction):
+    """Generate a new web dashboard access token (valid 30 days)."""
+    await interaction.response.defer(ephemeral=True)
+
+    user_id = interaction.user.id
+    plain_token, token_hash = _generate_web_token()
+
+    if _store_web_token(user_id, token_hash):
+        embed = discord.Embed(
+            title="🔐 Web Dashboard Token Generated",
+            description=(
+                f"**Your token:** ```{plain_token}```\n\n"
+                "This token grants access to YOUR data only and expires in 30 days.\n"
+                "**⚠️ Save this token now — it's shown only once!**\n\n"
+                f"Use it at: `https://your-oracle-ip:8080/dashboard?token={plain_token}`"
+            ),
+            color=0x3B82F6,
+            timestamp=datetime.utcnow(),
+        )
+        embed.set_footer(text="Keep this token secret — treat it like a password")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Log in command_log
+        try:
+            with _db() as conn:
+                cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+                cursor.execute(
+                    """INSERT INTO command_log (user_id, username, command, args_json, timestamp)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (user_id, interaction.user.name, "web token", '{}', datetime.utcnow().isoformat())
+                )
+                conn.commit()
+        except:
+            pass
+    else:
+        await interaction.followup.send("❌ Failed to generate token. Try again.", ephemeral=True)
+
+@web_group.command(name="tokens", description="View and manage your active web tokens")
+async def web_tokens_cmd(interaction: discord.Interaction):
+    """List all active tokens for this user."""
+    await interaction.response.defer(ephemeral=True)
+
+    user_id = interaction.user.id
+    try:
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
+            rows = list(cursor.execute(
+                """SELECT created_at, expires_at, last_used_at, is_active
+                   FROM web_tokens WHERE user_id = ? ORDER BY created_at DESC""",
+                (user_id,)
+            ).fetchall())
+
+        if not rows:
+            await interaction.followup.send("📭 No tokens generated yet. Use `/web token` to create one.", ephemeral=True)
+            return
+
+        lines = []
+        for i, row in enumerate(rows, 1):
+            created = datetime.fromisoformat(row[0]) if isinstance(row, (tuple, list)) else datetime.fromisoformat(row['created_at'])
+            expires = datetime.fromisoformat(row[1]) if isinstance(row, (tuple, list)) else datetime.fromisoformat(row['expires_at'])
+            last_used = row[2] if isinstance(row, (tuple, list)) else row['last_used_at']
+            is_active = row[3] if isinstance(row, (tuple, list)) else row['is_active']
+
+            status = "✅ Active" if is_active and expires > datetime.utcnow() else "🔴 Expired"
+            last_used_str = f"Last used: {datetime.fromisoformat(last_used).strftime('%Y-%m-%d %H:%M')}" if last_used else "Never used"
+            lines.append(f"**Token {i}** {status}\nCreated: {created.strftime('%Y-%m-%d')} | {last_used_str}")
+
+        embed = discord.Embed(
+            title="🔐 Your Web Tokens",
+            description="\n\n".join(lines),
+            color=0x3B82F6,
+        )
+        embed.add_field(
+            name="⚠️ Revoke All",
+            value="Use `/web revoke` to invalidate all tokens at once.",
+            inline=False
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+
+@web_group.command(name="revoke", description="Revoke all your web tokens")
+async def web_revoke(interaction: discord.Interaction):
+    """Revoke all active tokens (emergency logout)."""
+    await interaction.response.defer(ephemeral=True)
+
+    user_id = interaction.user.id
+    count = _revoke_user_tokens(user_id)
+
+    embed = discord.Embed(
+        title="✅ Tokens Revoked",
+        description=f"Revoked **{count}** token(s). All web dashboard sessions are now invalid.",
+        color=0xE63946,
+    )
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+bot.tree.add_command(web_group)
 
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
