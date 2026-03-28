@@ -70,6 +70,26 @@
     </div>
 </div>
 
+<div id="closePositionModal" class="modal-overlay hidden">
+    <div class="modal-content">
+        <span class="modal-close" onclick="closePositionModal()">×</span>
+        <h2 class="text-xs font-bold text-red-400 uppercase mb-3">Close Position</h2>
+        <p id="close-position-summary" class="text-[10px] text-slate-400 mb-4">Enter how many shares you sold and at what price.</p>
+        <div class="space-y-3 text-xs">
+            <input type="hidden" id="close-position-ticker">
+            <div>
+                <label class="text-[9px] text-slate-500 uppercase block mb-1">Shares Sold</label>
+                <input type="number" step="0.0001" id="close-position-shares" class="input-dark">
+            </div>
+            <div>
+                <label class="text-[9px] text-slate-500 uppercase block mb-1">Sell Price ($)</label>
+                <input type="number" step="0.01" id="close-position-price" class="input-dark">
+            </div>
+            <button type="button" onclick="submitClosePosition()" class="w-full bg-red-600 hover:bg-red-700 py-3 rounded text-xs font-black uppercase shadow-lg transition">Save Sale</button>
+        </div>
+    </div>
+</div>
+
 <!-- Header with Key Metrics -->
 <header class="card rounded-lg shadow-2xl border-l-4 border-l-blue-600 mb-4 p-6">
     <div class="flex flex-col gap-4">
@@ -179,10 +199,10 @@
                     <table class="w-full text-left text-[10px]">
                         <thead class="bg-slate-900/50 text-slate-400 uppercase text-[8px] border-b border-slate-800 sticky top-0">
                             <tr>
-                                <th class="p-3">Symbol</th><th class="p-3">Shares</th><th class="p-3">Entry</th><th class="p-3">Stop</th><th class="p-3">Target</th><th class="p-3">Risk</th><th class="p-3">Status</th><th class="p-3">Source</th>
+                                <th class="p-3">Symbol</th><th class="p-3">Shares</th><th class="p-3">Entry</th><th class="p-3">Stop</th><th class="p-3">Target</th><th class="p-3">Risk</th><th class="p-3">Status</th><th class="p-3">Source</th><th class="p-3">Action</th>
                             </tr>
                         </thead>
-                        <tbody id="portfolio-body">                            <tr class="border-b border-slate-800/50">                                <td class="p-3 text-slate-400" colspan="8">Loading positions...</td>                            </tr>                        </tbody>
+                        <tbody id="portfolio-body">                            <tr class="border-b border-slate-800/50">                                <td class="p-3 text-slate-400" colspan="9">Loading positions...</td>                            </tr>                        </tbody>
                     </table>
                 </div>
             </div>
@@ -388,7 +408,10 @@
 </div>
 
 <script>
-    const API_TOKEN = {{ token|tojson }};
+    const INJECTED_API_TOKEN = "{{ token | default('', true) }}";
+    const API_TOKEN = INJECTED_API_TOKEN && !INJECTED_API_TOKEN.includes('{{')
+        ? INJECTED_API_TOKEN
+        : new URLSearchParams(window.location.search).get('token');
     const API_BASE = '/api';
 
     const apiHeaders = { 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' };
@@ -411,7 +434,8 @@ async function safeFetch(path, fallback, options = {}) { try { return await fetc
 function statusClass(status) { const normalized = String(status || '').toUpperCase(); if (normalized === 'ACTIVE' || normalized === '3R_HIT') return 'status-pill status-good'; if (normalized === 'STOP_HIT') return 'status-pill status-bad'; return 'status-pill status-neutral'; }
 function tradingViewTarget(symbol) { const ticker = String(symbol || '').trim().toUpperCase(); const exchangeMap = { NVDA: 'NASDAQ', AAPL: 'NASDAQ', MSFT: 'NASDAQ', AMZN: 'NASDAQ', META: 'NASDAQ', TSLA: 'NASDAQ', AMD: 'NASDAQ', PLTR: 'NASDAQ', SOFI: 'NASDAQ', INTC: 'NASDAQ', JNJ: 'NYSE', UNH: 'NYSE' }; const tvSymbol = exchangeMap[ticker] ? `${exchangeMap[ticker]}:${ticker}` : ticker; return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`; }
 function tickerLink(symbol, extraClasses = 'font-bold text-blue-400') { const safeSymbol = escapeHtml(String(symbol || '').trim().toUpperCase()); return `<a href="${tradingViewTarget(symbol)}" target="_blank" rel="noopener noreferrer" class="${extraClasses} hover:text-blue-300 hover:underline" title="Open ${safeSymbol} in TradingView">${safeSymbol}</a>`; }
-function renderPortfolioTable(portfolio, activeTrades) { const rows = []; activeTrades.forEach((trade) => rows.push(`<tr class="border-b border-slate-800/50 hover:bg-slate-800/30"><td class="p-3">${tickerLink(trade.ticker)}</td><td class="p-3">${escapeHtml(trade.shares)}</td><td class="p-3">${formatCurrency(trade.entry_price)}</td><td class="p-3">${formatCurrency(trade.stop)}</td><td class="p-3">${formatCurrency(trade.target)}</td><td class="p-3 text-red-400">${formatCurrency(trade.risk_dollars)}</td><td class="p-3"><span class="${statusClass(trade.status)}">${escapeHtml(trade.status)}</span></td><td class="p-3 text-slate-400">Trade</td></tr>`)); portfolio.forEach((position) => rows.push(`<tr class="border-b border-slate-800/50 hover:bg-slate-800/30"><td class="p-3">${tickerLink(position.ticker)}</td><td class="p-3">${escapeHtml(position.shares)}</td><td class="p-3">${formatCurrency(position.entry_price)}</td><td class="p-3 text-slate-500">--</td><td class="p-3 text-slate-500">--</td><td class="p-3 text-slate-500">--</td><td class="p-3"><span class="${statusClass('HELD')}">HELD</span></td><td class="p-3 text-slate-400">Portfolio</td></tr>`)); document.getElementById('portfolio-body').innerHTML = rows.length ? rows.join('') : tableMessage(8, 'No positions or active trades yet.'); }
+function closeActionButton(symbol, shares, entryPrice) { return `<button type="button" onclick="openClosePositionModal('${escapeHtml(String(symbol || '').trim().toUpperCase())}', ${Number(shares) || 0}, ${Number(entryPrice) || 0})" class="h-6 w-6 rounded-full border border-red-500/60 text-red-400 hover:bg-red-500/10 hover:text-red-300 font-bold leading-none" title="Sell / close ${escapeHtml(String(symbol || '').trim().toUpperCase())}">×</button>`; }
+function renderPortfolioTable(portfolio, activeTrades) { const rows = []; activeTrades.forEach((trade) => rows.push(`<tr class="border-b border-slate-800/50 hover:bg-slate-800/30"><td class="p-3">${tickerLink(trade.ticker)}</td><td class="p-3">${escapeHtml(trade.shares)}</td><td class="p-3">${formatCurrency(trade.entry_price)}</td><td class="p-3">${formatCurrency(trade.stop)}</td><td class="p-3">${formatCurrency(trade.target)}</td><td class="p-3 text-red-400">${formatCurrency(trade.risk_dollars)}</td><td class="p-3"><span class="${statusClass(trade.status)}">${escapeHtml(trade.status)}</span></td><td class="p-3 text-slate-400">Trade</td><td class="p-3">${closeActionButton(trade.ticker, trade.shares, trade.entry_price)}</td></tr>`)); portfolio.forEach((position) => rows.push(`<tr class="border-b border-slate-800/50 hover:bg-slate-800/30"><td class="p-3">${tickerLink(position.ticker)}</td><td class="p-3">${escapeHtml(position.shares)}</td><td class="p-3">${formatCurrency(position.entry_price)}</td><td class="p-3 text-slate-500">--</td><td class="p-3 text-slate-500">--</td><td class="p-3 text-slate-500">--</td><td class="p-3"><span class="${statusClass('HELD')}">HELD</span></td><td class="p-3 text-slate-400">Portfolio</td><td class="p-3">${closeActionButton(position.ticker, position.shares, position.entry_price)}</td></tr>`)); document.getElementById('portfolio-body').innerHTML = rows.length ? rows.join('') : tableMessage(9, 'No positions or active trades yet.'); }
 function renderTradesTable(trades) { const rows = trades.map((trade) => `<tr class="border-b border-slate-800/50 hover:bg-slate-800/30"><td class="p-3">${escapeHtml(formatDateTime(trade.closed_at || trade.created_at))}</td><td class="p-3">${tickerLink(trade.ticker)}</td><td class="p-3">${escapeHtml(trade.shares)}</td><td class="p-3">${formatCurrency(trade.entry_price)}</td><td class="p-3">${formatCurrency(trade.exit_price)}</td><td class="p-3 font-bold ${Number(trade.pnl_amount) >= 0 ? 'text-emerald-400' : 'text-red-400'}">${formatSignedCurrency(trade.pnl_amount)}</td><td class="p-3 text-slate-400">${escapeHtml(trade.status)}</td></tr>`); document.getElementById('trades-body').innerHTML = rows.length ? rows.join('') : tableMessage(7, 'No closed trades yet.'); }
 function renderWatchlist(watchlist) { const rows = watchlist.map((item) => `<div class="bg-slate-900/30 p-3 rounded text-xs flex justify-between gap-3"><span>${tickerLink(item.ticker)}</span><span class="status-pill status-neutral">${escapeHtml(item.tier || 'Watching')}</span></div>`); document.getElementById('watchlist-container').innerHTML = rows.length ? rows.join('') : '<div class="bg-slate-900/30 p-3 rounded text-xs text-slate-400">Your watchlist is empty.</div>'; }
 function renderAlerts(alerts) { const rows = alerts.map((alert) => `<div class="bg-slate-900/30 border border-slate-800 p-3 rounded text-xs"><p class="font-bold text-green-400 mb-1">${escapeHtml(alert.type || 'Alert')}</p><p class="text-slate-300 text-[10px] break-words">${escapeHtml(alert.params && Object.keys(alert.params).length ? JSON.stringify(alert.params) : 'No extra details')}</p><p class="text-slate-500 text-[9px] mt-2">${escapeHtml(formatDateTime(alert.created_at))}</p></div>`); document.getElementById('alerts-container').innerHTML = rows.length ? rows.join('') : '<div class="bg-slate-900/30 p-3 rounded text-xs text-slate-400">No active alerts.</div>'; }
@@ -441,6 +465,9 @@ function downloadFile(content, filename) { const blob = new Blob([content], { ty
 async function refreshDashboard(showConfirmation = false) { const [portfolioData, activeTradesData, watchlistData, tradesData, alertsData] = await Promise.all([safeFetch('/portfolio', { portfolio: [] }), safeFetch('/active-trades', { trades: [] }), safeFetch('/watchlist', { watchlist: [] }), safeFetch('/trades', { trades: [] }), safeFetch('/alerts', { alerts: [] })]); const portfolio = portfolioData.portfolio || []; const activeTrades = activeTradesData.trades || []; const watchlist = watchlistData.watchlist || []; const trades = tradesData.trades || []; const alerts = alertsData.alerts || []; renderPortfolioTable(portfolio, activeTrades); renderTradesTable(trades); renderWatchlist(watchlist); renderAlerts(alerts); renderMetrics(portfolio, activeTrades, watchlist, trades); renderPerformance(trades); renderCharts(trades); setText('last-sync', new Date().toLocaleTimeString('en-GB')); refreshCountdown = 30; setText('timer', `${refreshCountdown}s`); if (showConfirmation) alert('Dashboard synced successfully.'); }
 async function syncData() { try { await refreshDashboard(true); } catch (error) { alert(`Error syncing: ${error.message}`); } }
 async function populateMarketTables() { const button = document.getElementById('populate-market-button'); const originalLabel = button ? button.textContent : 'Populate Tables'; if (button) { button.disabled = true; button.textContent = 'Populating...'; } try { const data = await fetchJson('/populate-market-data', { method: 'POST' }); await Promise.all([loadScanData(), loadPremarketData(), loadLeadersData(), loadAfterHoursData(), loadSectorsData()]); if (data.generated_at) setText('last-sync', new Date().toLocaleTimeString('en-GB')); alert(data.message || 'Market tables populated.'); } catch (error) { alert(`Error populating tables: ${error.message}`); } finally { if (button) { button.disabled = false; button.textContent = originalLabel; } } }
+function openClosePositionModal(ticker, shares, entryPrice) { document.getElementById('close-position-ticker').value = ticker; document.getElementById('close-position-shares').value = Number(shares) || ''; document.getElementById('close-position-shares').max = Number(shares) || ''; document.getElementById('close-position-price').value = Number(entryPrice) ? Number(entryPrice).toFixed(2) : ''; document.getElementById('close-position-summary').textContent = `${ticker} • available: ${Number(shares) || 0} shares`; document.getElementById('closePositionModal').classList.remove('hidden'); }
+function closePositionModal() { const modal = document.getElementById('closePositionModal'); if (modal) modal.classList.add('hidden'); }
+async function submitClosePosition() { const ticker = document.getElementById('close-position-ticker').value; const shares = parseFloat(document.getElementById('close-position-shares').value); const exitPrice = parseFloat(document.getElementById('close-position-price').value); if (!ticker || !shares || !exitPrice) { alert('Enter the sold shares and sell price first.'); return; } try { const data = await fetchJson('/close-position', { method: 'POST', body: JSON.stringify({ ticker, shares, exit_price: exitPrice }) }); closePositionModal(); alert(data.message || 'Position closed.'); await refreshDashboard(); } catch (error) { alert(`Error closing position: ${error.message}`); } }
 function closeWatchlistModal() { const modal = document.getElementById('watchlistModal'); if (modal) modal.classList.add('hidden'); }
 function startRefreshTimer() { if (countdownIntervalId) clearInterval(countdownIntervalId); countdownIntervalId = window.setInterval(() => { refreshCountdown = refreshCountdown > 0 ? refreshCountdown - 1 : 0; setText('timer', `${refreshCountdown}s`); }, 1000); }
 window.onload = async () => { if (!API_TOKEN) { window.location = '/dashboard'; return; } document.getElementById('t-date').valueAsDate = new Date(); startRefreshTimer(); await refreshDashboard(); await Promise.all([loadScanData(), loadPremarketData(), loadLeadersData(), loadAfterHoursData(), loadSectorsData()]); if (refreshIntervalId) clearInterval(refreshIntervalId); refreshIntervalId = window.setInterval(() => { refreshDashboard().catch((error) => console.error('Auto refresh failed:', error)); }, 30000); };

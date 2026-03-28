@@ -430,18 +430,165 @@ def api_add_trade(user_id: int):
     """Add a new trade from dashboard (syncs to Discord)."""
     try:
         data = request.json
+        symbol = str(data.get("symbol", "")).strip().upper()
+        shares = float(data.get("shares", 0) or 0)
+        entry = float(data.get("entry", 0) or 0)
+        stop = float(data.get("stop", 0) or 0)
+        target = float(data.get("target", 0) or 0)
+        risk_dollars = float(data.get("risk", 0) or 0)
+
+        if not symbol or shares <= 0 or entry <= 0 or stop <= 0 or target <= 0:
+            return jsonify({"error": "Invalid trade payload"}), 400
+
+        created_at = datetime.utcnow().isoformat()
         with _db() as conn:
             cursor = conn.cursor() if hasattr(conn, 'cursor') else conn
             cursor.execute(
                 """INSERT INTO trades (user_id, ticker, shares, entry, stop, target, risk_dollars, status, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)""",
-                (user_id, data.get('symbol'), data.get('shares'), data.get('entry'),
-                 data.get('stop'), data.get('target'), data.get('risk', 0), datetime.utcnow().isoformat())
+                (user_id, symbol, shares, entry, stop, target, risk_dollars, created_at)
             )
+
+            existing = cursor.execute(
+                "SELECT shares, entry_price FROM portfolio WHERE user_id = ? AND ticker = ?",
+                (user_id, symbol),
+            ).fetchone()
+
+            if existing:
+                existing_shares = float(existing[0] or 0)
+                existing_entry = float(existing[1] or 0)
+                total_shares = existing_shares + shares
+                weighted_entry = (
+                    ((existing_shares * existing_entry) + (shares * entry)) / total_shares
+                    if total_shares > 0 else entry
+                )
+                cursor.execute(
+                    """UPDATE portfolio
+                       SET shares = ?, entry_price = ?, added_at = ?
+                       WHERE user_id = ? AND ticker = ?""",
+                    (total_shares, weighted_entry, created_at, user_id, symbol),
+                )
+            else:
+                cursor.execute(
+                    """INSERT INTO portfolio (user_id, ticker, shares, entry_price, added_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (user_id, symbol, shares, entry, created_at),
+                )
             conn.commit()
-        return jsonify({"success": True, "message": "Trade added & synced to Discord bot"}), 200
+        return jsonify({"success": True, "message": "Trade added and portfolio updated"}), 200
     except Exception as e:
         return jsonify({"error": str(e)[:100]}), 500
+
+@_flask_app.route("/api/close-position", methods=["POST"])
+@_require_web_token
+def api_close_position(user_id: int):
+    """Close or partially sell a position and move it into closed trade history."""
+    try:
+        data = request.json or {}
+        ticker = str(data.get("ticker", "")).strip().upper()
+        shares_to_close = float(data.get("shares", 0) or 0)
+        exit_price = float(data.get("exit_price", 0) or 0)
+
+        if not ticker or shares_to_close <= 0 or exit_price <= 0:
+            return jsonify({"error": "Ticker, shares, and sell price are required"}), 400
+
+        closed_at = datetime.utcnow().isoformat()
+        with _db() as conn:
+            cursor = conn.cursor() if hasattr(conn, "cursor") else conn
+            portfolio_row = cursor.execute(
+                "SELECT shares, entry_price FROM portfolio WHERE user_id = ? AND ticker = ?",
+                (user_id, ticker),
+            ).fetchone()
+            if not portfolio_row:
+                return jsonify({"error": f"{ticker} is not in your portfolio"}), 404
+
+            available_shares = float(portfolio_row["shares"])
+            portfolio_entry = float(portfolio_row["entry_price"])
+            if shares_to_close > available_shares:
+                return jsonify({"error": f"You only have {available_shares:g} shares of {ticker}"}), 400
+
+            active_trades = list(
+                cursor.execute(
+                    """SELECT id, shares, entry, stop, target, risk_dollars, created_at
+                       FROM trades
+                       WHERE user_id = ? AND ticker = ? AND status = 'ACTIVE'
+                       ORDER BY created_at ASC""",
+                    (user_id, ticker),
+                ).fetchall()
+            )
+
+            remaining = shares_to_close
+            closed_trade_count = 0
+
+            for trade in active_trades:
+                trade_id = trade["id"]
+                trade_shares = float(trade["shares"])
+                if remaining <= 0:
+                    break
+
+                if remaining >= trade_shares:
+                    _close_trade(trade_id, "MANUAL_EXIT", exit_price, sync_portfolio=False)
+                    remaining -= trade_shares
+                    closed_trade_count += 1
+                    continue
+
+                ratio = remaining / trade_shares
+                remaining_shares = round(trade_shares - remaining, 8)
+                closed_risk = round(float(trade["risk_dollars"] or 0) * ratio, 4)
+                remaining_risk = round(float(trade["risk_dollars"] or 0) - closed_risk, 4)
+                cursor.execute(
+                    "UPDATE trades SET shares = ?, risk_dollars = ? WHERE id = ?",
+                    (remaining_shares, remaining_risk, trade_id),
+                )
+                cursor.execute(
+                    """INSERT INTO trades (user_id, ticker, shares, entry, stop, target, risk_dollars, status, created_at, exit_price, closed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'MANUAL_EXIT', ?, ?, ?)""",
+                    (
+                        user_id,
+                        ticker,
+                        remaining,
+                        float(trade["entry"]),
+                        float(trade["stop"]),
+                        float(trade["target"]),
+                        closed_risk,
+                        trade["created_at"],
+                        exit_price,
+                        closed_at,
+                    ),
+                )
+                closed_trade_count += 1
+                remaining = 0
+                break
+
+            if remaining > 0:
+                cursor.execute(
+                    """INSERT INTO trades (user_id, ticker, shares, entry, stop, target, risk_dollars, status, created_at, exit_price, closed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'MANUAL_EXIT', ?, ?, ?)""",
+                    (
+                        user_id,
+                        ticker,
+                        remaining,
+                        portfolio_entry,
+                        portfolio_entry,
+                        portfolio_entry,
+                        0.0,
+                        closed_at,
+                        exit_price,
+                        closed_at,
+                    ),
+                )
+                closed_trade_count += 1
+
+            conn.commit()
+
+        _reduce_portfolio_position(user_id, ticker, shares_to_close)
+        return jsonify({
+            "success": True,
+            "message": f"Closed {shares_to_close:g} share(s) of {ticker} at ${exit_price:,.2f}",
+            "closed_trade_count": closed_trade_count,
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:120]}), 500
 
 @_flask_app.route("/api/add-watchlist", methods=["POST"])
 @_require_web_token
@@ -1083,14 +1230,46 @@ def _update_trade_status(trade_id: int, status: str):
         conn.execute("UPDATE trades SET status = ? WHERE id = ?", (status, trade_id))
         conn.commit()
 
-def _close_trade(trade_id: int, status: str, exit_price: float):
+def _reduce_portfolio_position(user_id: int, ticker: str, shares_to_remove: float):
+    if shares_to_remove <= 0:
+        return
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT shares FROM portfolio WHERE user_id = ? AND ticker = ?",
+            (user_id, ticker),
+        ).fetchone()
+        if not row:
+            return
+        current_shares = float(row["shares"] or 0)
+        remaining_shares = round(current_shares - shares_to_remove, 8)
+        if remaining_shares > 0:
+            conn.execute(
+                "UPDATE portfolio SET shares = ?, added_at = ? WHERE user_id = ? AND ticker = ?",
+                (remaining_shares, datetime.utcnow().isoformat(), user_id, ticker),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM portfolio WHERE user_id = ? AND ticker = ?",
+                (user_id, ticker),
+            )
+        conn.commit()
+
+def _close_trade(trade_id: int, status: str, exit_price: float, sync_portfolio: bool = True):
     """Close a trade, recording exit price and close timestamp."""
     with _db() as conn:
+        row = conn.execute(
+            "SELECT user_id, ticker, shares FROM trades WHERE id = ?",
+            (trade_id,),
+        ).fetchone()
+        if not row:
+            return
         conn.execute(
             "UPDATE trades SET status = ?, exit_price = ?, closed_at = ? WHERE id = ?",
             (status, round(exit_price, 4), datetime.utcnow().isoformat(), trade_id),
         )
         conn.commit()
+    if sync_portfolio:
+        _reduce_portfolio_position(int(row["user_id"]), str(row["ticker"]), float(row["shares"] or 0))
 
 init_db()
 
@@ -2459,13 +2638,8 @@ async def _monitor_trades():
                     updates.append((row["id"], "STOP_HIT", price))
 
             if updates:
-                with _db() as conn:
-                    for trade_id, status, exit_px in updates:
-                        conn.execute(
-                            "UPDATE trades SET status = ?, exit_price = ?, closed_at = ? WHERE id = ?",
-                            (status, round(exit_px, 4), datetime.utcnow().isoformat(), trade_id),
-                        )
-                    conn.commit()
+                for trade_id, status, exit_px in updates:
+                    _close_trade(trade_id, status, exit_px)
                 print(f"[Monitor] Updated trades: {[(u[0], u[1]) for u in updates]}")
 
         except Exception as e:
