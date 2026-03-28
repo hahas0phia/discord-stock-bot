@@ -28,7 +28,18 @@
         .modal-close { float: right; font-size: 20px; cursor: pointer; color: #94a3b8; }
         .modal-close:hover { color: #f1f5f9; }
         .pnl-positive { background-color: rgba(16, 185, 129, 0.1); }
-        .pnl-negative { background-color: rgba(239, 68, 68, 0.1); }
+        .pnl-negative { background-color: rgba(239, 68, 68, 0.1); }        .header-metrics-grid { grid-template-columns: repeat(9, minmax(0, 1fr)); }        .status-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 0.2rem 0.55rem; font-size: 10px; font-weight: 700; }        .status-good { color: #bbf7d0; background: rgba(16, 185, 129, 0.18); }        .status-bad { color: #fecaca; background: rgba(239, 68, 68, 0.18); }        .status-neutral { color: #cbd5e1; background: rgba(148, 163, 184, 0.16); }        @media (max-width: 1024px) { .dashboard-grid { grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 16px; } }        @media (max-width: 768px) { body { padding: 10px; } .header-title-row { flex-direction: column; align-items: stretch; } .header-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; } .mobile-full-button { width: 100%; } .modal-content { width: calc(100% - 20px); margin: 10px; } }
+        .header-metrics-grid { grid-template-columns: repeat(9, minmax(0, 1fr)); }
+        @media (max-width: 1024px) {
+            .dashboard-grid { grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 16px; }
+        }
+        @media (max-width: 768px) {
+            body { padding: 10px; }
+            .header-title-row { flex-direction: column; align-items: stretch; }
+            .header-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+            .mobile-full-button { width: 100%; }
+            .modal-content { width: calc(100% - 20px); margin: 10px; }
+        }
     </style>
 </head>
 <body class="p-4">
@@ -63,58 +74,61 @@
 <header class="card rounded-lg shadow-2xl border-l-4 border-l-blue-600 mb-4 p-6">
     <div class="flex flex-col gap-4">
         <!-- Title Row -->
-        <div class="flex justify-between items-center">
+        <div class="header-title-row flex justify-between items-center gap-3">
             <div>
                 <h1 class="text-2xl font-bold tracking-tighter uppercase text-blue-500">Gemini Terminal Hub</h1>
                 <div class="text-[10px] text-slate-500 mt-1 uppercase">
-                    Sync: <span id="last-sync">14:35:22</span> | Next: <span id="timer" class="text-orange-400">60s</span> | <span id="market-status" class="font-bold text-emerald-400">MARKET OPEN</span>
+                    Sync: <span id="last-sync">--</span> | Next: <span id="timer" class="text-orange-400">30s</span> | <span id="market-status" class="font-bold text-emerald-400">TOKEN LINKED</span>
                 </div>
             </div>
-            <button onclick="syncData()" class="bg-blue-600 hover:bg-blue-700 px-4 py-1 rounded text-xs font-bold uppercase h-fit">Sync Now</button>
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <button onclick="syncData()" class="mobile-full-button bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-xs font-bold uppercase h-fit">Sync Now</button>
+                <button id="populate-market-button" onclick="populateMarketTables()" class="mobile-full-button bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-xs font-bold uppercase h-fit">Populate Tables</button>
+            </div>
         </div>
 
         <!-- All Metrics in Single Row -->
-        <div class="grid grid-cols-9 gap-3 text-center text-[8px]">
+        <div class="header-metrics-grid grid gap-3 text-center text-[8px]">
             <div>
-                <p class="text-slate-500 uppercase">Total Equity</p>
-                <p id="m-equity" class="text-sm font-bold font-mono text-blue-400">$698.27</p>
+                <p class="text-slate-500 uppercase">Portfolio Cost</p>
+                <p id="m-equity" class="text-sm font-bold font-mono text-blue-400">--</p>
             </div>
             <div>
-                <p class="text-slate-500 uppercase">Open PnL %</p>
-                <p id="m-pnl" class="text-sm font-bold text-red-400 font-mono">-6.13%</p>
+                <p class="text-slate-500 uppercase">Closed PnL</p>
+                <p id="m-pnl" class="text-sm font-bold text-blue-400 font-mono">--</p>
             </div>
             <div>
                 <p class="text-slate-500 uppercase">Win Rate</p>
-                <p id="m-winrate" class="text-sm font-bold font-mono">60%</p>
+                <p id="m-winrate" class="text-sm font-bold font-mono">--</p>
             </div>
             <div>
-                <p class="text-slate-500 uppercase">Total Risk</p>
-                <p id="f-risk-header" class="text-sm font-bold text-red-400 font-mono">$11.15</p>
+                <p class="text-slate-500 uppercase">Open Risk</p>
+                <p id="f-risk-header" class="text-sm font-bold text-red-400 font-mono">--</p>
             </div>
             <div>
                 <p class="text-slate-500 uppercase">Biggest Win</p>
-                <p class="text-sm font-bold text-emerald-400 font-mono">+$637.50</p>
+                <p id="m-biggest-win" class="text-sm font-bold text-emerald-400 font-mono">--</p>
             </div>
             <div>
                 <p class="text-slate-500 uppercase">Biggest Loss</p>
-                <p class="text-sm font-bold text-red-500 font-mono">-$180.00</p>
+                <p id="m-biggest-loss" class="text-sm font-bold text-red-500 font-mono">--</p>
             </div>
             <div>
-                <p class="text-slate-500 uppercase">Trades</p>
-                <p class="text-sm font-bold font-mono">25</p>
+                <p class="text-slate-500 uppercase">Closed Trades</p>
+                <p id="m-trades" class="text-sm font-bold font-mono">--</p>
             </div>
             <div>
-                <p class="text-slate-500 uppercase">Net Profit</p>
-                <p class="text-sm font-bold text-emerald-400 font-mono">+$1,320</p>
+                <p class="text-slate-500 uppercase">Watchlist</p>
+                <p id="m-watchlist" class="text-sm font-bold text-blue-400 font-mono">--</p>
             </div>
             <div>
                 <div class="flex justify-center items-center gap-1">
                     <div class="w-6 bg-slate-900/50 rounded h-1 overflow-hidden">
-                        <div class="bg-emerald-500 h-full" style="width: 60%"></div>
+                        <div id="m-win-progress" class="bg-emerald-500 h-full" style="width: 0%"></div>
                     </div>
                 </div>
-                <p class="text-slate-500 uppercase mt-1">Win %</p>
-                <p class="text-sm font-bold text-emerald-400">60%</p>
+                <p class="text-slate-500 uppercase mt-1">Open Trades</p>
+                <p id="m-open-trades" class="text-sm font-bold text-emerald-400">--</p>
             </div>
         </div>
     </div>
@@ -134,7 +148,7 @@
 </div>
 
 <!-- Main Content Area -->
-<div class="grid grid-cols-12 gap-6">
+<div class="dashboard-grid grid grid-cols-12 gap-6">
     <div class="col-span-12 lg:col-span-8 space-y-4">
 
         <!-- PORTFOLIO TAB -->
@@ -144,16 +158,16 @@
                 <h2 class="text-xs font-bold text-slate-400 uppercase mb-3">📰 Live Intelligence (Top Headlines)</h2>
                 <div id="news-container" class="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] max-h-40 overflow-y-auto">
                     <div class="border-l-2 border-blue-500 pl-3 py-2 bg-slate-800/20 rounded">
-                        <p class="font-bold text-slate-200">Fed Keeps Rates Steady</p>
-                        <div class="text-[8px] text-blue-400">Reuters • 14:22</div>
+                        <p class="font-bold text-slate-200">No live news feed configured.</p>
+                        <div class="text-[8px] text-blue-400">This panel stays empty until a news source is connected.</div>
                     </div>
                 </div>
             </div>
 
-            <!-- Portfolio Monitor with Inline Buttons -->
+            <!-- Positions & Active Trades with Inline Buttons -->
             <div class="card overflow-hidden rounded-lg mb-4">
                 <div class="p-4 border-b border-slate-800 bg-slate-900/30 flex justify-between items-center">
-                    <h2 class="text-xs font-bold text-slate-500 uppercase">📈 Portfolio Monitor</h2>
+                    <h2 class="text-xs font-bold text-slate-500 uppercase">📈 Positions & Active Trades</h2>
                     <div class="inline-buttons">
                         <button onclick="downloadPortfolioCSV()" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📥 CSV</button>
                         <button onclick="downloadPortfolioTXT()" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-[8px] font-bold btn-sm">📥 TXT</button>
@@ -165,21 +179,10 @@
                     <table class="w-full text-left text-[10px]">
                         <thead class="bg-slate-900/50 text-slate-400 uppercase text-[8px] border-b border-slate-800 sticky top-0">
                             <tr>
-                                <th class="p-3">Symbol</th><th class="p-3">Shares</th><th class="p-3">Entry</th><th class="p-3">Live</th><th class="p-3">PnL</th><th class="p-3">Risk</th><th class="p-3">Stop</th><th class="p-3">Target</th>
+                                <th class="p-3">Symbol</th><th class="p-3">Shares</th><th class="p-3">Entry</th><th class="p-3">Stop</th><th class="p-3">Target</th><th class="p-3">Risk</th><th class="p-3">Status</th><th class="p-3">Source</th>
                             </tr>
                         </thead>
-                        <tbody id="portfolio-body">
-                            <tr class="border-b border-slate-800/50 hover:bg-slate-800/30 pnl-negative">
-                                <td class="p-3 font-bold text-blue-400">PLTR</td>
-                                <td class="p-3">2</td>
-                                <td class="p-3">$153.19</td>
-                                <td class="p-3 font-bold">$143.06</td>
-                                <td class="p-3 text-red-400 font-bold">-$20.26</td>
-                                <td class="p-3 text-red-400">$4.60</td>
-                                <td class="p-3">$150.89</td>
-                                <td class="p-3">$160.08</td>
-                            </tr>
-                        </tbody>
+                        <tbody id="portfolio-body">                            <tr class="border-b border-slate-800/50">                                <td class="p-3 text-slate-400" colspan="8">Loading positions...</td>                            </tr>                        </tbody>
                     </table>
                 </div>
             </div>
@@ -203,26 +206,8 @@
                 </div>
                 <div class="max-h-56 overflow-y-auto">
                     <table class="w-full text-left text-[10px]">
-                        <thead class="bg-slate-900/50 text-slate-500 uppercase text-[8px] sticky top-0 z-10 border-b border-slate-800">
-                            <tr>
-                                <th class="p-3">Date</th>
-                                <th class="p-3">Symbol</th>
-                                <th class="p-3">Entry</th>
-                                <th class="p-3">Exit</th>
-                                <th class="p-3">PnL ($)</th>
-                                <th class="p-3">Thesis</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-slate-800/50" id="trades-body">
-                            <tr class="hover:bg-slate-800/30">
-                                <td class="p-3">2026-03-24</td>
-                                <td class="p-3 font-bold text-blue-400">AAPL</td>
-                                <td class="p-3">$180.25</td>
-                                <td class="p-3">$188.50</td>
-                                <td class="p-3 text-emerald-400 font-bold">+$410.00</td>
-                                <td class="p-3 text-slate-400">Strong breakout above 21 EMA</td>
-                            </tr>
-                        </tbody>
+                        <thead class="bg-slate-900/50 text-slate-500 uppercase text-[8px] sticky top-0 z-10 border-b border-slate-800">                            <tr>                                <th class="p-3">Date</th>                                <th class="p-3">Symbol</th>                                <th class="p-3">Shares</th>                                <th class="p-3">Entry</th>                                <th class="p-3">Exit</th>                                <th class="p-3">PnL ($)</th>                                <th class="p-3">Status</th>                            </tr>                        </thead>
+                        <tbody class="divide-y divide-slate-800/50" id="trades-body">                            <tr class="hover:bg-slate-800/30">                                <td class="p-3 text-slate-400" colspan="7">Loading trade history...</td>                            </tr>                        </tbody>
                     </table>
                 </div>
             </div>
@@ -232,7 +217,7 @@
         <div id="content-scan" class="content-tab hidden">
             <div class="card p-6 rounded-lg">
                 <h2 class="text-xs font-bold text-blue-500 uppercase mb-4 pb-2 border-b border-slate-800">📈 3-Tier EMA Scan Results</h2>
-                <div class="space-y-4"></div>
+                <div id="scan-panels" class="space-y-4"></div>
             </div>
         </div>
 
@@ -348,12 +333,22 @@
                 <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Date</label><input type="date" id="t-date" class="input-dark"></div>
                 <div class="grid grid-cols-2 gap-4">
                     <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Symbol</label><input type="text" id="t-symbol" class="input-dark uppercase font-bold" placeholder="Ticker..."></div>
-                    <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Shares</label><input type="number" id="t-shares" class="input-dark"></div>
+                    <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Shares</label><input type="number" id="t-shares" class="input-dark" oninput="calculatePosition(true)"></div>
                 </div>
-                <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Entry Price ($)</label><input type="number" step="0.01" id="t-price" class="input-dark font-bold text-blue-400" oninput="calculateExits()"></div>
                 <div class="grid grid-cols-2 gap-4">
-                    <div><label class="text-[9px] text-red-400 uppercase block mb-1">Stop (1.5%)</label><input type="number" step="0.01" id="t-stop" class="input-dark text-red-400"></div>
+                    <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Portfolio Size ($)</label><input type="number" step="0.01" id="t-portfolio" class="input-dark" oninput="calculatePosition()"></div>
+                    <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Risk %</label><input type="number" step="0.01" id="t-risk-percent" class="input-dark" value="1" oninput="calculatePosition()"></div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Entry Price ($)</label><input type="number" step="0.01" id="t-price" class="input-dark font-bold text-blue-400" oninput="calculatePosition()"></div>
+                    <div><label class="text-[9px] text-red-400 uppercase block mb-1">Stop Loss %</label><input type="number" step="0.01" id="t-stop-percent" class="input-dark text-red-400" value="7" oninput="calculatePosition()"></div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div><label class="text-[9px] text-red-400 uppercase block mb-1">Stop Price</label><input type="number" step="0.01" id="t-stop" class="input-dark text-red-400"></div>
                     <div><label class="text-[9px] text-emerald-400 uppercase block mb-1">Target (3R)</label><input type="number" step="0.01" id="t-target" class="input-dark text-emerald-400"></div>
+                </div>
+                <div id="risk-summary" class="rounded border border-slate-800 bg-slate-900/30 p-3 text-[10px] text-slate-300">
+                    Enter portfolio size, risk %, stop %, and entry price to calculate position size.
                 </div>
                 <div><label class="text-[9px] text-slate-500 uppercase block mb-1">Thesis</label><textarea id="t-thesis" class="input-dark h-16 resize-none" placeholder="Why?"></textarea></div>
                 <button type="button" onclick="logTrade()" class="w-full bg-blue-600 hover:bg-blue-700 py-3 rounded text-xs font-black uppercase shadow-lg transition">Execute Trade</button>
@@ -371,33 +366,20 @@
                     <input type="file" id="watchlist-upload2" class="hidden" accept=".txt,.csv" onchange="uploadWatchlistFile(this)">
                 </div>
             </div>
-            <div id="watchlist-container" class="space-y-2">
-                <div class="bg-slate-900/30 p-3 rounded text-xs flex justify-between"><span class="font-bold text-blue-400">AMZN</span><span class="bg-green-900/50 text-green-400 px-2 py-1 rounded text-[9px]">🟢 Leading</span></div>
-            </div>
-        </div>
-
-        <!-- Alerts Section -->
+            <div id="watchlist-container" class="space-y-2">                <div class="bg-slate-900/30 p-3 rounded text-xs text-slate-400">Loading your watchlist...</div>            </div>        </div>        <!-- Alerts Section -->
         <div class="card p-4 rounded-lg">
             <h2 class="text-xs font-bold text-emerald-500 uppercase mb-3 border-b border-slate-800 pb-2">🔔 Active Alerts</h2>
-            <div id="alerts-container" class="space-y-2">
-                <div class="bg-green-900/20 border border-green-900/50 p-3 rounded text-xs">
-                    <p class="font-bold text-green-400 mb-1">📈 AAPL Entered Leading</p>
-                    <p class="text-slate-400 text-[9px]">Triggered: 2026-03-25 14:22</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- Performance Stats -->
+            <div id="alerts-container" class="space-y-2">                <div class="bg-slate-900/30 p-3 rounded text-xs text-slate-400">Loading alerts...</div>            </div>        </div>        <!-- Performance Stats -->
         <div class="card p-4 rounded-lg">
             <h2 class="text-xs font-bold text-slate-500 uppercase mb-3 border-b border-slate-800 pb-2">📊 Performance</h2>
             <div class="space-y-3">
-                <div class="flex justify-between"><span class="text-slate-400 text-xs">Win Rate</span><span class="font-bold text-emerald-400">60%</span></div>
-                <div class="w-full bg-slate-900/50 rounded h-2"><div class="bg-emerald-500 h-full" style="width: 60%"></div></div>
-                <div class="flex justify-between pt-2"><span class="text-slate-400 text-xs">Total Trades</span><span class="font-bold">25</span></div>
-                <div class="flex justify-between"><span class="text-slate-400 text-xs">Winning: 15</span><span class="text-emerald-400 text-xs">+$2,145</span></div>
-                <div class="flex justify-between"><span class="text-slate-400 text-xs">Losing: 10</span><span class="text-red-400 text-xs">-$825</span></div>
+                <div class="flex justify-between"><span class="text-slate-400 text-xs">Win Rate</span><span id="perf-winrate" class="font-bold text-emerald-400">--</span></div>
+                <div class="w-full bg-slate-900/50 rounded h-2"><div id="perf-winrate-bar" class="bg-emerald-500 h-full" style="width: 0%"></div></div>
+                <div class="flex justify-between pt-2"><span class="text-slate-400 text-xs">Total Trades</span><span id="perf-total-trades" class="font-bold">--</span></div>
+                <div class="flex justify-between"><span class="text-slate-400 text-xs">Winning</span><span id="perf-winning" class="text-emerald-400 text-xs">--</span></div>
+                <div class="flex justify-between"><span class="text-slate-400 text-xs">Losing</span><span id="perf-losing" class="text-red-400 text-xs">--</span></div>
                 <div class="border-t border-slate-800 pt-3 mt-3">
-                    <div class="flex justify-between"><span class="text-slate-400 text-xs">Net Profit</span><span class="font-bold text-emerald-400">+$1,320</span></div>
+                    <div class="flex justify-between"><span class="text-slate-400 text-xs">Net Profit</span><span id="perf-net-profit" class="font-bold text-emerald-400">--</span></div>
                 </div>
             </div>
         </div>
@@ -406,291 +388,71 @@
 </div>
 
 <script>
-    // Get token from URL - main.py will inject this for production
-    const API_TOKEN = new URLSearchParams(window.location.search).get('token');
+    const API_TOKEN = {{ token|tojson }};
     const API_BASE = '/api';
 
     const apiHeaders = { 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' };
-
-    function switchTab(tab) {
-        document.querySelectorAll('.content-tab').forEach(el => el.classList.add('hidden'));
-        document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
-        document.getElementById('content-' + tab).classList.remove('hidden');
-        document.getElementById('tab-' + tab).classList.add('active');
-
-        if (tab === 'scan') loadScanData();
-        else if (tab === 'premarket') loadPremarketData();
-        else if (tab === 'leaders') loadLeadersData();
-        else if (tab === 'after') loadAfterHoursData();
-        else if (tab === 'sectors') loadSectorsData();
-    }
-
-    async function loadScanData() {
-        try {
-            const res = await fetch(`${API_BASE}/scan`, { headers: apiHeaders });
-            const data = await res.json();
-            console.log('Scan data loaded:', data);
-        } catch (e) { console.error('Scan load error:', e); }
-    }
-
-    async function loadPremarketData() {
-        try {
-            const res = await fetch(`${API_BASE}/premarket`, { headers: apiHeaders });
-            const data = await res.json();
-            console.log('Pre-market data loaded:', data);
-        } catch (e) { console.error('Premarket load error:', e); }
-    }
-
-    async function loadLeadersData() {
-        try {
-            const res = await fetch(`${API_BASE}/leaders`, { headers: apiHeaders });
-            const data = await res.json();
-            console.log('Leaders data loaded:', data);
-        } catch (e) { console.error('Leaders load error:', e); }
-    }
-
-    async function loadAfterHoursData() {
-        try {
-            const res = await fetch(`${API_BASE}/after`, { headers: apiHeaders });
-            const data = await res.json();
-            console.log('After hours data loaded:', data);
-        } catch (e) { console.error('After hours load error:', e); }
-    }
-
-    async function loadSectorsData() {
-        try {
-            const res = await fetch(`${API_BASE}/sectors`, { headers: apiHeaders });
-            const data = await res.json();
-            console.log('Sectors data loaded:', data);
-        } catch (e) { console.error('Sectors load error:', e); }
-    }
-
-    function calculateExits() {
-        const entry = parseFloat(document.getElementById('t-price').value);
-        if (entry) {
-            const stop = entry * 0.985;
-            document.getElementById('t-stop').value = stop.toFixed(2);
-            document.getElementById('t-target').value = (entry + ((entry - stop) * 3)).toFixed(2);
-        }
-    }
-
-    async function logTrade() {
-        const trade = {
-            symbol: document.getElementById('t-symbol').value,
-            shares: parseFloat(document.getElementById('t-shares').value),
-            entry: parseFloat(document.getElementById('t-price').value),
-            stop: parseFloat(document.getElementById('t-stop').value),
-            target: parseFloat(document.getElementById('t-target').value),
-            thesis: document.getElementById('t-thesis').value
-        };
-
-        try {
-            const res = await fetch(`${API_BASE}/add-trade`, {
-                method: 'POST',
-                headers: apiHeaders,
-                body: JSON.stringify(trade)
-            });
-            const data = await res.json();
-            alert('✅ ' + data.message);
-            document.getElementById('trade-form').reset();
-        } catch (e) { alert('❌ Error: ' + e.message); }
-    }
-
-    async function displaySectorStocks() {
-        const sector = document.getElementById('sector-select').value;
-        const sectorNames = {tech: 'Technology', health: 'Healthcare', finance: 'Financials', energy: 'Energy', real: 'Real Estate'};
-        document.getElementById('sector-name').innerHTML = `🟢 Top Leading Stocks in ${sectorNames[sector]}`;
-
-        try {
-            const res = await fetch(`${API_BASE}/sector/${sector}`, { headers: apiHeaders });
-            const data = await res.json();
-            console.log('Sector stocks:', data);
-        } catch (e) { console.error('Error:', e); }
-    }
-
-    async function exportScanResults(type) {
-        try {
-            const res = await fetch(`${API_BASE}/scan`, { headers: apiHeaders });
-            const data = await res.json();
-            let csv = 'Symbol,Price,Change%,Volume\n';
-            const stocks = data[type] || [];
-            stocks.forEach(s => { csv += `${s.symbol},${s.price},${s.change},${s.volume}\n`; });
-            downloadFile(csv, `scan_${type}.csv`);
-        } catch (e) { alert('Error: ' + e.message); }
-    }
-
-    async function exportSectorStocks(format = 'csv') {
-        try {
-            const sector = document.getElementById('sector-select').value;
-            const res = await fetch(`${API_BASE}/sector/${sector}`, { headers: apiHeaders });
-            const data = await res.json();
-            let content = format === 'csv'
-                ? 'Symbol,Price,Tier,Change%\n' + data.stocks.map(s => `${s.symbol},${s.price},${s.tier},${s.change}`).join('\n')
-                : data.stocks.map(s => s.symbol).join(',');
-            downloadFile(content, `sector_stocks.${format}`);
-        } catch (e) { alert('Error: ' + e.message); }
-    }
-
-    async function downloadPortfolioCSV() {
-        try {
-            const res = await fetch(`${API_BASE}/export-portfolio?format=csv`, { headers: apiHeaders });
-            const data = await res.json();
-            downloadFile(data.data, 'portfolio.csv');
-        } catch (e) { alert('Error: ' + e.message); }
-    }
-
-    async function downloadPortfolioTXT() {
-        try {
-            const res = await fetch(`${API_BASE}/export-portfolio?format=txt`, { headers: apiHeaders });
-            const data = await res.json();
-            downloadFile(data.data, 'portfolio.txt');
-        } catch (e) { alert('Error: ' + e.message); }
-    }
-
-    async function downloadWatchlistCSV() {
-        try {
-            const res = await fetch(`${API_BASE}/export-watchlist?format=csv`, { headers: apiHeaders });
-            const data = await res.json();
-            downloadFile(data.data, 'watchlist.csv');
-        } catch (e) { alert('Error: ' + e.message); }
-    }
-
-    async function downloadWatchlistTXT() {
-        try {
-            const res = await fetch(`${API_BASE}/export-watchlist?format=txt`, { headers: apiHeaders });
-            const data = await res.json();
-            downloadFile(data.data, 'watchlist.txt');
-        } catch (e) { alert('Error: ' + e.message); }
-    }
-
-    async function uploadPortfolioFile(input) {
-        if (!input.files[0]) return;
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-            try {
-                const res = await fetch(`${API_BASE}/import-portfolio`, {
-                    method: 'POST',
-                    headers: apiHeaders,
-                    body: JSON.stringify({ content: e.target.result })
-                });
-                const data = await res.json();
-                alert('✅ ' + data.message);
-            } catch (err) { alert('❌ Error: ' + err.message); }
-        };
-        reader.readAsText(input.files[0]);
-    }
-
-    async function uploadWatchlistFile(input) {
-        if (!input.files[0]) return;
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-            try {
-                const res = await fetch(`${API_BASE}/import-watchlist`, {
-                    method: 'POST',
-                    headers: apiHeaders,
-                    body: JSON.stringify({ content: e.target.result })
-                });
-                const data = await res.json();
-                alert('✅ ' + data.message);
-            } catch (err) { alert('❌ Error: ' + err.message); }
-        };
-        reader.readAsText(input.files[0]);
-    }
-
-    function downloadFile(content, filename) {
-        const blob = new Blob([content], {type: 'text/plain'});
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.click();
-    }
-
-    async function syncData() {
-        try {
-            await Promise.all([
-                fetch(`${API_BASE}/portfolio`, { headers: apiHeaders }),
-                fetch(`${API_BASE}/watchlist`, { headers: apiHeaders }),
-                fetch(`${API_BASE}/trades`, { headers: apiHeaders })
-            ]);
-            location.reload();
-        } catch (e) { alert('Error syncing: ' + e.message); }
-    }
-
-    function showWatchlistModal() {
-        const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
-        document.getElementById('briefDate').textContent = today;
-        const modal = document.getElementById('watchlistModal');
-        modal.classList.remove('hidden');
-    }
-
-    function closeWatchlistModal() {
-        const modal = document.getElementById('watchlistModal');
-        modal.classList.add('hidden');
-    }
-
-    window.onload = () => {
-        document.getElementById('t-date').valueAsDate = new Date();
-
-        // Initialize charts
-        if (document.getElementById('equityCurveChart')) {
-            const ctx1 = document.getElementById('equityCurveChart').getContext('2d');
-            new Chart(ctx1, {
-                type: 'line',
-                data: {
-                    labels: ['Mar 1', 'Mar 5', 'Mar 10', 'Mar 15', 'Mar 20', 'Mar 25'],
-                    datasets: [{
-                        label: 'Equity Curve',
-                        data: [10000, 10450, 10320, 10850, 10650, 10200],
-                        borderColor: '#3b82f6',
-                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                        tension: 0.3,
-                        fill: true,
-                        pointRadius: 4,
-                        pointBackgroundColor: '#3b82f6'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
-                        x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }
-                    }
-                }
-            });
-        }
-
-        if (document.getElementById('performanceChart')) {
-            const ctx2 = document.getElementById('performanceChart').getContext('2d');
-            new Chart(ctx2, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Wins', 'Losses'],
-                    datasets: [{
-                        data: [60, 40],
-                        backgroundColor: ['#10b981', '#ef4444'],
-                        borderColor: '#0f172a',
-                        borderWidth: 2
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { labels: { color: '#94a3b8' } } }
-                }
-            });
-        }
-
-        if (!API_TOKEN) {
-            window.location = '/dashboard';
-        } else {
-            showWatchlistModal();
-            console.log('✅ Dashboard loaded with API token');
-        }
-    };
+const sectorNames = { tech: 'Technology', health: 'Healthcare', finance: 'Financials', energy: 'Energy', real: 'Real Estate' };
+let equityCurveChartInstance = null;
+let performanceChartInstance = null;
+let refreshCountdown = 30;
+let refreshIntervalId = null;
+let countdownIntervalId = null;
+function escapeHtml(value) { return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+function formatCurrency(value) { if (value === null || value === undefined || Number.isNaN(Number(value))) return '--'; return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(Number(value)); }
+function formatSignedCurrency(value) { if (value === null || value === undefined || Number.isNaN(Number(value))) return '--'; const amount = Number(value); return `${amount > 0 ? '+' : ''}${formatCurrency(amount)}`; }
+function formatPercent(value) { if (value === null || value === undefined || Number.isNaN(Number(value))) return '--'; return `${Number(value).toFixed(1)}%`; }
+function formatDateTime(value) { if (!value) return '--'; const date = new Date(value); if (Number.isNaN(date.getTime())) return value; return date.toLocaleString('en-US', { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }); }
+function setText(id, value) { const element = document.getElementById(id); if (element) element.textContent = value; }
+function setWidth(id, value) { const element = document.getElementById(id); if (element) element.style.width = `${Math.max(0, Math.min(100, Number(value) || 0))}%`; }
+function tableMessage(colspan, message) { return `<tr><td class="p-3 text-slate-400" colspan="${colspan}">${escapeHtml(message)}</td></tr>`; }
+async function fetchJson(path, options = {}) { const response = await fetch(`${API_BASE}${path}`, { headers: apiHeaders, ...options }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`); return payload; }
+async function safeFetch(path, fallback, options = {}) { try { return await fetchJson(path, options); } catch (error) { console.error(`Failed to load ${path}:`, error); return fallback; } }
+function statusClass(status) { const normalized = String(status || '').toUpperCase(); if (normalized === 'ACTIVE' || normalized === '3R_HIT') return 'status-pill status-good'; if (normalized === 'STOP_HIT') return 'status-pill status-bad'; return 'status-pill status-neutral'; }
+function tradingViewTarget(symbol) { const ticker = String(symbol || '').trim().toUpperCase(); const exchangeMap = { NVDA: 'NASDAQ', AAPL: 'NASDAQ', MSFT: 'NASDAQ', AMZN: 'NASDAQ', META: 'NASDAQ', TSLA: 'NASDAQ', AMD: 'NASDAQ', PLTR: 'NASDAQ', SOFI: 'NASDAQ', INTC: 'NASDAQ', JNJ: 'NYSE', UNH: 'NYSE' }; const tvSymbol = exchangeMap[ticker] ? `${exchangeMap[ticker]}:${ticker}` : ticker; return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`; }
+function tickerLink(symbol, extraClasses = 'font-bold text-blue-400') { const safeSymbol = escapeHtml(String(symbol || '').trim().toUpperCase()); return `<a href="${tradingViewTarget(symbol)}" target="_blank" rel="noopener noreferrer" class="${extraClasses} hover:text-blue-300 hover:underline" title="Open ${safeSymbol} in TradingView">${safeSymbol}</a>`; }
+function renderPortfolioTable(portfolio, activeTrades) { const rows = []; activeTrades.forEach((trade) => rows.push(`<tr class="border-b border-slate-800/50 hover:bg-slate-800/30"><td class="p-3">${tickerLink(trade.ticker)}</td><td class="p-3">${escapeHtml(trade.shares)}</td><td class="p-3">${formatCurrency(trade.entry_price)}</td><td class="p-3">${formatCurrency(trade.stop)}</td><td class="p-3">${formatCurrency(trade.target)}</td><td class="p-3 text-red-400">${formatCurrency(trade.risk_dollars)}</td><td class="p-3"><span class="${statusClass(trade.status)}">${escapeHtml(trade.status)}</span></td><td class="p-3 text-slate-400">Trade</td></tr>`)); portfolio.forEach((position) => rows.push(`<tr class="border-b border-slate-800/50 hover:bg-slate-800/30"><td class="p-3">${tickerLink(position.ticker)}</td><td class="p-3">${escapeHtml(position.shares)}</td><td class="p-3">${formatCurrency(position.entry_price)}</td><td class="p-3 text-slate-500">--</td><td class="p-3 text-slate-500">--</td><td class="p-3 text-slate-500">--</td><td class="p-3"><span class="${statusClass('HELD')}">HELD</span></td><td class="p-3 text-slate-400">Portfolio</td></tr>`)); document.getElementById('portfolio-body').innerHTML = rows.length ? rows.join('') : tableMessage(8, 'No positions or active trades yet.'); }
+function renderTradesTable(trades) { const rows = trades.map((trade) => `<tr class="border-b border-slate-800/50 hover:bg-slate-800/30"><td class="p-3">${escapeHtml(formatDateTime(trade.closed_at || trade.created_at))}</td><td class="p-3">${tickerLink(trade.ticker)}</td><td class="p-3">${escapeHtml(trade.shares)}</td><td class="p-3">${formatCurrency(trade.entry_price)}</td><td class="p-3">${formatCurrency(trade.exit_price)}</td><td class="p-3 font-bold ${Number(trade.pnl_amount) >= 0 ? 'text-emerald-400' : 'text-red-400'}">${formatSignedCurrency(trade.pnl_amount)}</td><td class="p-3 text-slate-400">${escapeHtml(trade.status)}</td></tr>`); document.getElementById('trades-body').innerHTML = rows.length ? rows.join('') : tableMessage(7, 'No closed trades yet.'); }
+function renderWatchlist(watchlist) { const rows = watchlist.map((item) => `<div class="bg-slate-900/30 p-3 rounded text-xs flex justify-between gap-3"><span>${tickerLink(item.ticker)}</span><span class="status-pill status-neutral">${escapeHtml(item.tier || 'Watching')}</span></div>`); document.getElementById('watchlist-container').innerHTML = rows.length ? rows.join('') : '<div class="bg-slate-900/30 p-3 rounded text-xs text-slate-400">Your watchlist is empty.</div>'; }
+function renderAlerts(alerts) { const rows = alerts.map((alert) => `<div class="bg-slate-900/30 border border-slate-800 p-3 rounded text-xs"><p class="font-bold text-green-400 mb-1">${escapeHtml(alert.type || 'Alert')}</p><p class="text-slate-300 text-[10px] break-words">${escapeHtml(alert.params && Object.keys(alert.params).length ? JSON.stringify(alert.params) : 'No extra details')}</p><p class="text-slate-500 text-[9px] mt-2">${escapeHtml(formatDateTime(alert.created_at))}</p></div>`); document.getElementById('alerts-container').innerHTML = rows.length ? rows.join('') : '<div class="bg-slate-900/30 p-3 rounded text-xs text-slate-400">No active alerts.</div>'; }
+function renderMetrics(portfolio, activeTrades, watchlist, trades) { const totalCost = portfolio.reduce((sum, item) => sum + (Number(item.entry_price) * Number(item.shares)), 0); const closedPnl = trades.reduce((sum, trade) => sum + Number(trade.pnl_amount || 0), 0); const wins = trades.filter((trade) => Number(trade.pnl_amount) > 0); const losses = trades.filter((trade) => Number(trade.pnl_amount) < 0); const winRate = trades.length ? (wins.length / trades.length) * 100 : 0; const biggestWin = wins.length ? Math.max(...wins.map((trade) => Number(trade.pnl_amount))) : null; const biggestLoss = losses.length ? Math.min(...losses.map((trade) => Number(trade.pnl_amount))) : null; const totalRisk = activeTrades.reduce((sum, trade) => sum + Number(trade.risk_dollars || 0), 0); setText('m-equity', formatCurrency(totalCost)); setText('m-pnl', formatSignedCurrency(closedPnl)); setText('m-winrate', formatPercent(winRate)); setText('f-risk-header', formatCurrency(totalRisk)); setText('m-biggest-win', biggestWin === null ? '--' : formatSignedCurrency(biggestWin)); setText('m-biggest-loss', biggestLoss === null ? '--' : formatSignedCurrency(biggestLoss)); setText('m-trades', String(trades.length)); setText('m-watchlist', String(watchlist.length)); setText('m-open-trades', String(activeTrades.length)); setWidth('m-win-progress', winRate); }
+function renderPerformance(trades) { const wins = trades.filter((trade) => Number(trade.pnl_amount) > 0); const losses = trades.filter((trade) => Number(trade.pnl_amount) < 0); const winRate = trades.length ? (wins.length / trades.length) * 100 : 0; const grossWins = wins.reduce((sum, trade) => sum + Number(trade.pnl_amount || 0), 0); const grossLosses = losses.reduce((sum, trade) => sum + Number(trade.pnl_amount || 0), 0); const net = trades.reduce((sum, trade) => sum + Number(trade.pnl_amount || 0), 0); setText('perf-winrate', formatPercent(winRate)); setWidth('perf-winrate-bar', winRate); setText('perf-total-trades', String(trades.length)); setText('perf-winning', `${wins.length} / ${formatSignedCurrency(grossWins)}`); setText('perf-losing', `${losses.length} / ${formatSignedCurrency(grossLosses)}`); setText('perf-net-profit', formatSignedCurrency(net)); }
+function renderCharts(trades) { const sortedTrades = [...trades].sort((a, b) => new Date(a.closed_at || a.created_at) - new Date(b.closed_at || b.created_at)); const labels = []; const values = []; let running = 0; sortedTrades.forEach((trade) => { running += Number(trade.pnl_amount || 0); labels.push(formatDateTime(trade.closed_at || trade.created_at)); values.push(Number(running.toFixed(2))); }); const wins = trades.filter((trade) => Number(trade.pnl_amount) > 0).length; const losses = trades.filter((trade) => Number(trade.pnl_amount) < 0).length; if (equityCurveChartInstance) equityCurveChartInstance.destroy(); if (performanceChartInstance) performanceChartInstance.destroy(); equityCurveChartInstance = new Chart(document.getElementById('equityCurveChart').getContext('2d'), { type: 'line', data: { labels: labels.length ? labels : ['No closed trades yet'], datasets: [{ label: 'Closed PnL', data: labels.length ? values : [0], borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', tension: 0.3, fill: true, pointRadius: labels.length ? 3 : 0, pointBackgroundColor: '#3b82f6' }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }, x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } } } }); performanceChartInstance = new Chart(document.getElementById('performanceChart').getContext('2d'), { type: 'doughnut', data: { labels: wins || losses ? ['Wins', 'Losses'] : ['No closed trades'], datasets: [{ data: wins || losses ? [wins, losses] : [1], backgroundColor: wins || losses ? ['#10b981', '#ef4444'] : ['#475569'], borderColor: '#0f172a', borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#94a3b8' } } } } }); }
+function renderScanSection(title, colorClass, stocks) { const rows = stocks.length ? stocks.map((stock) => `<div class="bg-slate-900/30 border border-slate-800 rounded p-3 flex justify-between items-center gap-3"><div><div>${tickerLink(stock.symbol, 'font-bold text-slate-100')}</div><div class="text-[10px] text-slate-400">${formatCurrency(stock.price)} | Vol ${escapeHtml(stock.volume)}</div></div><div class="${colorClass} font-bold">${formatPercent(stock.change)}</div></div>`).join('') : '<div class="text-slate-400 text-xs">No stocks returned.</div>'; return `<div class="border border-slate-800 rounded-lg p-4"><h3 class="text-xs font-bold uppercase ${colorClass} mb-3">${escapeHtml(title)}</h3><div class="space-y-2">${rows}</div></div>`; }
+function switchTab(tab) { document.querySelectorAll('.content-tab').forEach((el) => el.classList.add('hidden')); document.querySelectorAll('.tab-button').forEach((el) => el.classList.remove('active')); document.getElementById('content-' + tab).classList.remove('hidden'); document.getElementById('tab-' + tab).classList.add('active'); if (tab === 'scan') loadScanData(); else if (tab === 'premarket') loadPremarketData(); else if (tab === 'leaders') loadLeadersData(); else if (tab === 'after') loadAfterHoursData(); else if (tab === 'sectors') loadSectorsData(); }
+async function loadScanData() { const data = await safeFetch('/scan', { leading: [], mediocre: [], lagging: [] }); document.getElementById('scan-panels').innerHTML = [renderScanSection('Leading', 'text-emerald-400', data.leading || []), renderScanSection('Mediocre', 'text-yellow-400', data.mediocre || []), renderScanSection('Lagging', 'text-red-400', data.lagging || [])].join(''); }
+async function loadPremarketData() { const data = await safeFetch('/premarket', { gaps: [] }); const rows = (data.gaps || []).map((item) => `<tr class="border-b border-slate-800/50"><td class="p-3">${tickerLink(item.symbol)}</td><td class="p-3">${formatCurrency(item.close)}</td><td class="p-3">${formatCurrency(item.premarket)}</td><td class="p-3 ${Number(item.gap_pct) >= 0 ? 'text-emerald-400' : 'text-red-400'}">${formatPercent(item.gap_pct)}</td><td class="p-3">${escapeHtml(item.volume)}</td></tr>`).join(''); document.getElementById('premarket-body').innerHTML = rows || tableMessage(5, 'No pre-market movers available.'); }
+async function loadLeadersData() { const data = await safeFetch('/leaders', { leaders: [] }); const cards = (data.leaders || []).map((item) => `<div class="border border-slate-800 rounded-lg p-4 bg-slate-900/30"><div class="flex justify-between items-start gap-3"><div><p>${tickerLink(item.symbol)}</p><p class="text-[10px] text-slate-400">${formatCurrency(item.price)} | Vol ${escapeHtml(item.volume)}</p></div><span class="text-emerald-400 font-bold">${formatPercent(item.change_1m)}</span></div></div>`).join(''); document.getElementById('leaders-container').innerHTML = cards || '<div class="text-slate-400 text-xs">No leaders returned.</div>'; }
+async function loadAfterHoursData() { const data = await safeFetch('/after', { after_hours: [] }); const rows = (data.after_hours || []).map((item) => `<tr class="border-b border-slate-800/50"><td class="p-3">${tickerLink(item.symbol)}</td><td class="p-3">${formatCurrency(item.price)}</td><td class="p-3 ${Number(item.change) >= 0 ? 'text-emerald-400' : 'text-red-400'}">${formatPercent(item.change)}</td><td class="p-3">${escapeHtml(item.adr)}</td><td class="p-3">${formatCurrency(item.volume_usd)}</td></tr>`).join(''); document.getElementById('after-body').innerHTML = rows || tableMessage(5, 'No after-hours movers available.'); }
+async function loadSectorsData() { const data = await safeFetch('/sectors', { hot_sectors: [] }); if (data.hot_sectors && data.hot_sectors.length) { document.getElementById('sector-select').innerHTML = data.hot_sectors.map((sector) => { const mappedValue = Object.entries(sectorNames).find(([, label]) => label === sector.name)?.[0] || sector.name.slice(0, 4).toLowerCase(); return `<option value="${escapeHtml(mappedValue)}">${escapeHtml(sector.name)} (${Number(sector.change).toFixed(1)}%)</option>`; }).join(''); } await displaySectorStocks(); }
+function calculatePosition(preserveShares = false) { const portfolio = parseFloat(document.getElementById('t-portfolio').value); const riskPercent = parseFloat(document.getElementById('t-risk-percent').value); const entry = parseFloat(document.getElementById('t-price').value); const stopPercent = parseFloat(document.getElementById('t-stop-percent').value); const summary = document.getElementById('risk-summary'); if (!portfolio || !riskPercent || !entry || !stopPercent || stopPercent <= 0 || stopPercent >= 100) { if (summary) summary.textContent = 'Enter portfolio size, risk %, stop %, and entry price to calculate position size.'; return; } const riskDollars = portfolio * (riskPercent / 100); const stopDistance = entry * (stopPercent / 100); const stopPrice = entry - stopDistance; const positionValue = riskDollars / (stopPercent / 100); const suggestedShares = Math.max(0, Math.floor(positionValue / entry)); if (!preserveShares || !document.getElementById('t-shares').value) { document.getElementById('t-shares').value = suggestedShares; } const shares = Math.max(0, Math.floor(parseFloat(document.getElementById('t-shares').value) || 0)); const actualRisk = shares * stopDistance; const target = entry + ((entry - stopPrice) * 3); document.getElementById('t-stop').value = stopPrice.toFixed(2); document.getElementById('t-target').value = target.toFixed(2); if (summary) { summary.innerHTML = `<div>Max risk: ${formatCurrency(riskDollars)}</div><div>Position size: ${formatCurrency(positionValue)}</div><div>Suggested shares: ${suggestedShares}</div><div>Actual risk: ${formatCurrency(actualRisk)}</div>`; } }
+function calculateExits() { calculatePosition(false); }
+async function logTrade() { const entry = parseFloat(document.getElementById('t-price').value); const stop = parseFloat(document.getElementById('t-stop').value); const shares = Math.floor(parseFloat(document.getElementById('t-shares').value) || 0); const target = parseFloat(document.getElementById('t-target').value); const trade = { symbol: document.getElementById('t-symbol').value.trim().toUpperCase(), shares, entry, stop, target, thesis: document.getElementById('t-thesis').value.trim(), risk: Number.isFinite(entry) && Number.isFinite(stop) && Number.isFinite(shares) ? Math.abs(entry - stop) * shares : 0 }; if (!trade.symbol || !shares || !entry || !stop || !target) { alert('Please fill in symbol, portfolio/risk inputs, entry, stop, target, and shares first.'); return; } try { const data = await fetchJson('/add-trade', { method: 'POST', body: JSON.stringify(trade) }); alert(data.message || 'Trade added.'); document.getElementById('trade-form').reset(); document.getElementById('t-date').valueAsDate = new Date(); document.getElementById('risk-summary').textContent = 'Enter portfolio size, risk %, stop %, and entry price to calculate position size.'; await refreshDashboard(); } catch (error) { alert(`Error: ${error.message}`); } }
+async function displaySectorStocks() { const sector = document.getElementById('sector-select').value; document.getElementById('sector-name').textContent = `Top Leading Stocks in ${sectorNames[sector] || sector}`; const data = await safeFetch(`/sector/${sector}`, { stocks: [] }); const cards = (data.stocks || []).map((stock) => `<div class="border border-slate-800 rounded-lg p-3 bg-slate-900/30"><div class="flex justify-between items-center gap-3"><span>${tickerLink(stock.symbol)}</span><span class="status-pill status-good">${escapeHtml(stock.tier)}</span></div><div class="text-[10px] text-slate-400 mt-2">${formatCurrency(stock.price)} | ${formatPercent(stock.change)}</div></div>`).join(''); document.getElementById('sector-stocks').innerHTML = cards || '<div class="text-slate-400 text-xs">No sector stocks available.</div>'; }
+async function exportScanResults(type) { try { const data = await fetchJson('/scan'); let csv = 'Symbol,Price,Change%,Volume\n'; const stocks = data[type] || []; stocks.forEach((s) => { csv += `${s.symbol},${s.price},${s.change},${s.volume}\n`; }); downloadFile(csv, `scan_${type}.csv`); } catch (error) { alert(`Error: ${error.message}`); } }
+async function exportSectorStocks(format = 'csv') { try { const sector = document.getElementById('sector-select').value; const data = await fetchJson(`/sector/${sector}`); const stocks = data.stocks || []; const content = format === 'csv' ? `Symbol,Price,Tier,Change%\n${stocks.map((s) => `${s.symbol},${s.price},${s.tier},${s.change}`).join('\n')}` : stocks.map((s) => s.symbol).join(','); downloadFile(content, `sector_stocks.${format}`); } catch (error) { alert(`Error: ${error.message}`); } }
+async function downloadPortfolioCSV() { try { const data = await fetchJson('/export-portfolio?format=csv'); downloadFile(data.data, 'portfolio.csv'); } catch (error) { alert(`Error: ${error.message}`); } }
+async function downloadPortfolioTXT() { try { const data = await fetchJson('/export-portfolio?format=txt'); downloadFile(data.data, 'portfolio.txt'); } catch (error) { alert(`Error: ${error.message}`); } }
+async function downloadWatchlistCSV() { try { const data = await fetchJson('/export-watchlist?format=csv'); downloadFile(data.data, 'watchlist.csv'); } catch (error) { alert(`Error: ${error.message}`); } }
+async function downloadWatchlistTXT() { try { const data = await fetchJson('/export-watchlist?format=txt'); downloadFile(data.data, 'watchlist.txt'); } catch (error) { alert(`Error: ${error.message}`); } }
+async function uploadPortfolioFile(input) { if (!input.files[0]) return; const reader = new FileReader(); reader.onload = async (e) => { try { const data = await fetchJson('/import-portfolio', { method: 'POST', body: JSON.stringify({ content: e.target.result }) }); alert(data.message || 'Portfolio imported.'); await refreshDashboard(); } catch (error) { alert(`Error: ${error.message}`); } finally { input.value = ''; } }; reader.readAsText(input.files[0]); }
+async function uploadWatchlistFile(input) { if (!input.files[0]) return; const reader = new FileReader(); reader.onload = async (e) => { try { const data = await fetchJson('/import-watchlist', { method: 'POST', body: JSON.stringify({ content: e.target.result }) }); alert(data.message || 'Watchlist imported.'); await refreshDashboard(); } catch (error) { alert(`Error: ${error.message}`); } finally { input.value = ''; } }; reader.readAsText(input.files[0]); }
+function downloadFile(content, filename) { const blob = new Blob([content], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url); }
+async function refreshDashboard(showConfirmation = false) { const [portfolioData, activeTradesData, watchlistData, tradesData, alertsData] = await Promise.all([safeFetch('/portfolio', { portfolio: [] }), safeFetch('/active-trades', { trades: [] }), safeFetch('/watchlist', { watchlist: [] }), safeFetch('/trades', { trades: [] }), safeFetch('/alerts', { alerts: [] })]); const portfolio = portfolioData.portfolio || []; const activeTrades = activeTradesData.trades || []; const watchlist = watchlistData.watchlist || []; const trades = tradesData.trades || []; const alerts = alertsData.alerts || []; renderPortfolioTable(portfolio, activeTrades); renderTradesTable(trades); renderWatchlist(watchlist); renderAlerts(alerts); renderMetrics(portfolio, activeTrades, watchlist, trades); renderPerformance(trades); renderCharts(trades); setText('last-sync', new Date().toLocaleTimeString('en-GB')); refreshCountdown = 30; setText('timer', `${refreshCountdown}s`); if (showConfirmation) alert('Dashboard synced successfully.'); }
+async function syncData() { try { await refreshDashboard(true); } catch (error) { alert(`Error syncing: ${error.message}`); } }
+async function populateMarketTables() { const button = document.getElementById('populate-market-button'); const originalLabel = button ? button.textContent : 'Populate Tables'; if (button) { button.disabled = true; button.textContent = 'Populating...'; } try { const data = await fetchJson('/populate-market-data', { method: 'POST' }); await Promise.all([loadScanData(), loadPremarketData(), loadLeadersData(), loadAfterHoursData(), loadSectorsData()]); if (data.generated_at) setText('last-sync', new Date().toLocaleTimeString('en-GB')); alert(data.message || 'Market tables populated.'); } catch (error) { alert(`Error populating tables: ${error.message}`); } finally { if (button) { button.disabled = false; button.textContent = originalLabel; } } }
+function closeWatchlistModal() { const modal = document.getElementById('watchlistModal'); if (modal) modal.classList.add('hidden'); }
+function startRefreshTimer() { if (countdownIntervalId) clearInterval(countdownIntervalId); countdownIntervalId = window.setInterval(() => { refreshCountdown = refreshCountdown > 0 ? refreshCountdown - 1 : 0; setText('timer', `${refreshCountdown}s`); }, 1000); }
+window.onload = async () => { if (!API_TOKEN) { window.location = '/dashboard'; return; } document.getElementById('t-date').valueAsDate = new Date(); startRefreshTimer(); await refreshDashboard(); await Promise.all([loadScanData(), loadPremarketData(), loadLeadersData(), loadAfterHoursData(), loadSectorsData()]); if (refreshIntervalId) clearInterval(refreshIntervalId); refreshIntervalId = window.setInterval(() => { refreshDashboard().catch((error) => console.error('Auto refresh failed:', error)); }, 30000); };
 </script>
 
 </body>
 </html>
+
+
+
+
+
+
+
+
