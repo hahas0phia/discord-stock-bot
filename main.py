@@ -5093,7 +5093,7 @@ async def web_token(interaction: discord.Interaction):
                 f"**Your token:** ```{plain_token}```\n\n"
                 "This token grants access to YOUR data only and expires in 30 days.\n"
                 "**⚠️ Save this token now — it's shown only once!**\n\n"
-                f"Use it at: `https://your-oracle-ip:8080/dashboard?token={plain_token}`"
+                f"Use it at: http://193.123.190.95:8080/dashboard?token={plain_token}"
             ),
             color=0x3B82F6,
             timestamp=datetime.utcnow(),
