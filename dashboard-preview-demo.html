@@ -408,13 +408,51 @@
 </div>
 
 <script>
-    const INJECTED_API_TOKEN = "{{ token | default('', true) }}";
-    const API_TOKEN = INJECTED_API_TOKEN && !INJECTED_API_TOKEN.includes('{{')
-        ? INJECTED_API_TOKEN
-        : new URLSearchParams(window.location.search).get('token');
+    const API_TOKEN = 'preview-demo';
     const API_BASE = '/api';
-
     const apiHeaders = { 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' };
+    const demoState = {
+        portfolio: [
+            { ticker: 'AAPL', shares: 25, entry_price: 181.42, added_at: '2026-03-28T09:30:00Z' },
+            { ticker: 'MSFT', shares: 12, entry_price: 424.15, added_at: '2026-03-28T09:45:00Z' }
+        ],
+        activeTrades: [
+            { id: 1, ticker: 'NVDA', shares: 195, entry_price: 73.00, stop: 67.89, target: 88.33, risk_dollars: 996.45, status: 'ACTIVE', created_at: '2026-03-28T10:00:00Z' }
+        ],
+        trades: [
+            { id: 91, ticker: 'AMD', shares: 50, entry_price: 155.00, stop: 149.00, target: 173.00, exit_price: 172.00, risk_dollars: 300.00, status: '3R_HIT', pnl_amount: 850.00, created_at: '2026-03-26T14:00:00Z', closed_at: '2026-03-27T15:20:00Z' },
+            { id: 92, ticker: 'TSLA', shares: 20, entry_price: 182.00, stop: 176.00, target: 200.00, exit_price: 176.00, risk_dollars: 120.00, status: 'STOP_HIT', pnl_amount: -120.00, created_at: '2026-03-27T10:30:00Z', closed_at: '2026-03-27T13:10:00Z' }
+        ],
+        watchlist: [
+            { ticker: 'PLTR', tier: 'Watching' },
+            { ticker: 'AMZN', tier: 'Leading' }
+        ],
+        alerts: [
+            { id: 1, type: 'price_target', params: { ticker: 'NVDA', target: 90 }, created_at: '2026-03-28T08:20:00Z' }
+        ],
+        scan: {
+            leading: [{ symbol: 'NVDA', price: 920.15, change: 8.1, volume: 4800000 }, { symbol: 'META', price: 512.30, change: 4.4, volume: 2200000 }],
+            mediocre: [{ symbol: 'PLTR', price: 153.19, change: 0.8, volume: 2100000 }],
+            lagging: [{ symbol: 'SOFI', price: 8.50, change: -5.3, volume: 1800000 }]
+        },
+        premarket: {
+            gaps: [{ symbol: 'TSLA', close: 245.30, premarket: 253.75, gap_pct: 3.44, volume: 2500000 }, { symbol: 'AAPL', close: 180.25, premarket: 185.90, gap_pct: 3.13, volume: 5200000 }]
+        },
+        leaders: {
+            leaders: [{ symbol: 'NVDA', price: 920.15, change_1m: 22.3, volume: 4800000 }, { symbol: 'AAPL', price: 180.25, change_1m: 18.5, volume: 5200000 }, { symbol: 'MSFT', price: 425.50, change_1m: 14.7, volume: 3500000 }]
+        },
+        after: {
+            after_hours: [{ symbol: 'TSLA', price: 250.90, change: 2.29, adr: 6.2, volume_usd: 560000000 }, { symbol: 'NVDA', price: 915.30, change: -0.52, adr: 7.1, volume_usd: 420000000 }]
+        },
+        sectors: {
+            hot_sectors: [{ name: 'Technology', change: 18.5, hot: true }, { name: 'Healthcare', change: 12.3, hot: false }, { name: 'Financials', change: 3.2, hot: false }]
+        },
+        sectorStocks: {
+            tech: [{ symbol: 'NVDA', price: 920.15, tier: 'Leading', change: 22.3 }, { symbol: 'AAPL', price: 180.25, tier: 'Leading', change: 18.5 }, { symbol: 'MSFT', price: 425.50, tier: 'Leading', change: 14.7 }],
+            health: [{ symbol: 'JNJ', price: 160.50, tier: 'Leading', change: 4.2 }],
+            finance: [{ symbol: 'JPM', price: 198.40, tier: 'Leading', change: 6.1 }]
+        }
+    };
 const sectorNames = { tech: 'Technology', health: 'Healthcare', finance: 'Financials', energy: 'Energy', real: 'Real Estate' };
 let equityCurveChartInstance = null;
 let performanceChartInstance = null;
@@ -429,7 +467,11 @@ function formatDateTime(value) { if (!value) return '--'; const date = new Date(
 function setText(id, value) { const element = document.getElementById(id); if (element) element.textContent = value; }
 function setWidth(id, value) { const element = document.getElementById(id); if (element) element.style.width = `${Math.max(0, Math.min(100, Number(value) || 0))}%`; }
 function tableMessage(colspan, message) { return `<tr><td class="p-3 text-slate-400" colspan="${colspan}">${escapeHtml(message)}</td></tr>`; }
-async function fetchJson(path, options = {}) { const response = await fetch(`${API_BASE}${path}`, { headers: apiHeaders, ...options }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`); return payload; }
+function clone(value) { return JSON.parse(JSON.stringify(value)); }
+function upsertPortfolioPosition(symbol, shares, entryPrice) { const existing = demoState.portfolio.find((item) => item.ticker === symbol); if (existing) { const totalShares = Number(existing.shares) + Number(shares); existing.entry_price = (((Number(existing.shares) * Number(existing.entry_price)) + (Number(shares) * Number(entryPrice))) / totalShares); existing.shares = totalShares; existing.added_at = new Date().toISOString(); } else { demoState.portfolio.push({ ticker: symbol, shares: Number(shares), entry_price: Number(entryPrice), added_at: new Date().toISOString() }); } }
+function reducePortfolioPosition(symbol, sharesToRemove) { const existing = demoState.portfolio.find((item) => item.ticker === symbol); if (!existing) return; existing.shares = Math.max(0, Number(existing.shares) - Number(sharesToRemove)); if (existing.shares <= 0) { demoState.portfolio = demoState.portfolio.filter((item) => item.ticker !== symbol); } }
+function demoCsv(rows, headers) { return `${headers.join(',')}\n${rows.map((row) => headers.map((header) => row[header] ?? '').join(',')).join('\n')}`; }
+async function fetchJson(path, options = {}) { const method = String(options.method || 'GET').toUpperCase(); const body = options.body ? JSON.parse(options.body) : null; if (method === 'GET' && path === '/portfolio') return { success: true, portfolio: clone(demoState.portfolio) }; if (method === 'GET' && path === '/active-trades') return { success: true, trades: clone(demoState.activeTrades) }; if (method === 'GET' && path === '/watchlist') return { success: true, watchlist: clone(demoState.watchlist) }; if (method === 'GET' && path === '/trades') return { success: true, trades: clone(demoState.trades) }; if (method === 'GET' && path === '/alerts') return { success: true, alerts: clone(demoState.alerts) }; if (method === 'GET' && path === '/scan') return { success: true, ...clone(demoState.scan) }; if (method === 'GET' && path === '/premarket') return { success: true, ...clone(demoState.premarket) }; if (method === 'GET' && path === '/leaders') return { success: true, ...clone(demoState.leaders) }; if (method === 'GET' && path === '/after') return { success: true, ...clone(demoState.after) }; if (method === 'GET' && path === '/sectors') return { success: true, ...clone(demoState.sectors) }; if (method === 'GET' && path.startsWith('/sector/')) { const sector = path.split('/').pop(); return { success: true, sector, stocks: clone(demoState.sectorStocks[sector] || []) }; } if (method === 'POST' && path === '/add-trade') { const trade = { id: Date.now(), ticker: String(body.symbol || '').trim().toUpperCase(), shares: Number(body.shares), entry_price: Number(body.entry), stop: Number(body.stop), target: Number(body.target), risk_dollars: Number(body.risk || 0), status: 'ACTIVE', created_at: new Date().toISOString() }; demoState.activeTrades.unshift(trade); upsertPortfolioPosition(trade.ticker, trade.shares, trade.entry_price); return { success: true, message: 'Preview trade added and portfolio updated' }; } if (method === 'POST' && path === '/close-position') { const ticker = String(body.ticker || '').trim().toUpperCase(); const shares = Number(body.shares || 0); const exitPrice = Number(body.exit_price || 0); let remaining = shares; demoState.activeTrades = demoState.activeTrades.flatMap((trade) => { if (trade.ticker !== ticker || remaining <= 0) return [trade]; const tradeShares = Number(trade.shares); if (remaining >= tradeShares) { demoState.trades.unshift({ id: Date.now() + Math.random(), ticker, shares: tradeShares, entry_price: Number(trade.entry_price), stop: Number(trade.stop), target: Number(trade.target), exit_price: exitPrice, risk_dollars: Number(trade.risk_dollars || 0), status: 'MANUAL_EXIT', pnl_amount: (exitPrice - Number(trade.entry_price)) * tradeShares, created_at: trade.created_at, closed_at: new Date().toISOString() }); remaining -= tradeShares; return []; } const closedShares = remaining; const leftShares = tradeShares - closedShares; demoState.trades.unshift({ id: Date.now() + Math.random(), ticker, shares: closedShares, entry_price: Number(trade.entry_price), stop: Number(trade.stop), target: Number(trade.target), exit_price: exitPrice, risk_dollars: Number(trade.risk_dollars || 0) * (closedShares / tradeShares), status: 'MANUAL_EXIT', pnl_amount: (exitPrice - Number(trade.entry_price)) * closedShares, created_at: trade.created_at, closed_at: new Date().toISOString() }); remaining = 0; return [{ ...trade, shares: leftShares, risk_dollars: Number(trade.risk_dollars || 0) * (leftShares / tradeShares) }]; }); if (remaining > 0) { demoState.trades.unshift({ id: Date.now() + Math.random(), ticker, shares: remaining, entry_price: exitPrice, stop: exitPrice, target: exitPrice, exit_price: exitPrice, risk_dollars: 0, status: 'MANUAL_EXIT', pnl_amount: 0, created_at: new Date().toISOString(), closed_at: new Date().toISOString() }); } reducePortfolioPosition(ticker, shares); return { success: true, message: `Preview sale saved for ${ticker}` }; } if (method === 'POST' && path === '/populate-market-data') return { success: true, message: 'Preview market tables refreshed', generated_at: new Date().toISOString() }; if (method === 'GET' && path === '/export-portfolio?format=csv') return { success: true, data: demoCsv(demoState.portfolio, ['ticker', 'shares', 'entry_price']) }; if (method === 'GET' && path === '/export-portfolio?format=txt') return { success: true, data: demoState.portfolio.map((item) => item.ticker).join(',') }; if (method === 'GET' && path === '/export-watchlist?format=csv') return { success: true, data: demoCsv(demoState.watchlist, ['ticker', 'tier']) }; if (method === 'GET' && path === '/export-watchlist?format=txt') return { success: true, data: demoState.watchlist.map((item) => item.ticker).join(',') }; if (method === 'POST' && (path === '/import-portfolio' || path === '/import-watchlist')) return { success: true, message: 'Preview import simulated successfully' }; throw new Error(`Preview route not implemented: ${method} ${path}`); }
 async function safeFetch(path, fallback, options = {}) { try { return await fetchJson(path, options); } catch (error) { console.error(`Failed to load ${path}:`, error); return fallback; } }
 function statusClass(status) { const normalized = String(status || '').toUpperCase(); if (normalized === 'ACTIVE' || normalized === '3R_HIT') return 'status-pill status-good'; if (normalized === 'STOP_HIT') return 'status-pill status-bad'; return 'status-pill status-neutral'; }
 function tradingViewTarget(symbol) { const ticker = String(symbol || '').trim().toUpperCase(); const exchangeMap = { NVDA: 'NASDAQ', AAPL: 'NASDAQ', MSFT: 'NASDAQ', AMZN: 'NASDAQ', META: 'NASDAQ', TSLA: 'NASDAQ', AMD: 'NASDAQ', PLTR: 'NASDAQ', SOFI: 'NASDAQ', INTC: 'NASDAQ', JNJ: 'NYSE', UNH: 'NYSE' }; const tvSymbol = exchangeMap[ticker] ? `${exchangeMap[ticker]}:${ticker}` : ticker; return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`; }
